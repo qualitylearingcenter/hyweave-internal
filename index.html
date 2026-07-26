@@ -659,7 +659,9 @@ async function refreshRoadDistances(){
   try{
     const supply = activeSupply();
     const controller = new AbortController();
-    const timeoutId = setTimeout(()=>controller.abort(), 8000); // never hang forever on a slow/dead backend
+    // Nationwide HGV matrices routinely take longer than eight seconds. The former timeout
+    // aborted valid OpenRouteService responses just before they completed.
+    const timeoutId = setTimeout(()=>controller.abort(), 25000);
     let resp;
     try{
       resp = await fetch(ROUTE_ENDPOINT_URL, {
@@ -758,7 +760,9 @@ async function refreshPlacementRoadDistances(locations){
   placementRoadStatus = 'loading';
   try{
     const controller = new AbortController();
-    const timeoutId = setTimeout(()=>controller.abort(), 8000);
+    // Placement matrices are larger than sourcing lookups because they validate every selected
+    // facility against its covered nodes. Allow the Netlify function time to finish the matrix.
+    const timeoutId = setTimeout(()=>controller.abort(), 25000);
     let resp;
     try{
       resp = await fetch(ROUTE_ENDPOINT_URL, {
@@ -1880,7 +1884,7 @@ let lastComputed = null;
 // Plan's road-distance badge, since it's the same underlying cache.
 function placementReachBadge(){
   if(placementRoadStatus==='ready') return '<span class="tag tag-low">\u2713 Real road reach (OpenRouteService)</span>';
-  if(placementRoadStatus==='loading') return '<span class="tag tag-med">Fetching real road reach\u2026</span>';
+  if(placementRoadStatus==='loading') return '<span class="tag tag-med">Fetching real road reach\u2026 large networks may take 20\u201325 seconds</span>';
   if(placementRoadStatus==='error') return `<span class="tag tag-high" title="${esc(placementRoadError)}">\u26a0 Real routing failed \u2014 showing straight-line</span> <a href="#" class="lnkRetryPlacementRoad" style="font-size:11px;color:var(--blue);margin-left:6px">Retry</a>`;
   return '<span class="tag tag-med">Straight-line reach (real routing not configured)</span>';
 }
@@ -1897,6 +1901,7 @@ function renderResultsTab(){
   const kpi = computeKPIs(sourcing, risk, hubs);
   const hycasPlan = computeAutoHycas(baseRisk);
   const hycasUnits = hycasPlan.units;
+  const hycasConfirmed = hycasPlan.metTarget && hycasPlan.roadValidated;
   lastComputed = {sourcing, risk, hubs, hubPlan, kpi, hycasPlan, hycasUnits};
 
   const supply = activeSupply();
@@ -1997,10 +2002,12 @@ function renderResultsTab(){
       ${placementReachBadge()}
     </div>
     ${hycasUnits.length===0?'<div class="empty">No units recommended — add demand nodes to generate a placement plan.</div>':`
-    <div class="card" style="border-color:${hycasPlan.metTarget?'#CDE9DC':'#F3DDB0'};background:${hycasPlan.metTarget?'#F3FBF7':'#FFFBF0'};margin-bottom:14px">
-      <b style="color:${hycasPlan.metTarget?'#177A4C':'#B57500'}">${hycasPlan.metTarget?'✓':'⚠'} System-recommended HyCAS unit count: ${hycasPlan.k}</b>
-      &nbsp;—&nbsp; ${hycasPlan.metTarget
-        ? `every demand node is reachable within the ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h HyCAS response targets (worst case: ${fmt(hycasPlan.achievedMaxDist,0)} mi, ${fmtHours(hycasPlan.achievedMaxHours)}).`
+    <div class="card" style="border-color:${hycasConfirmed?'#CDE9DC':'#F3DDB0'};background:${hycasConfirmed?'#F3FBF7':'#FFFBF0'};margin-bottom:14px">
+      <b style="color:${hycasConfirmed?'#177A4C':'#B57500'}">${hycasConfirmed?'✓':'◷'} ${hycasConfirmed?'System-recommended':'Preliminary'} HyCAS unit count: ${hycasPlan.k}</b>
+      &nbsp;—&nbsp; ${hycasConfirmed
+        ? `real-road validation confirms every demand node is reachable within the ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h HyCAS response targets (worst case: ${fmt(hycasPlan.achievedMaxDist,0)} mi, ${fmtHours(hycasPlan.achievedMaxHours)}).`
+      : hycasPlan.metTarget && !hycasPlan.roadValidated
+        ? `facility-based geometry meets the target provisionally; waiting for the road matrix before confirming this recommendation. Current geometric worst case: <b>${fmt(hycasPlan.achievedMaxDist,0)} mi / ${fmtHours(hycasPlan.achievedMaxHours)}</b>.`
       : hycasPlan.searchCapped
         ? `all ${hycasPlan.k} available facility location(s) were evaluated; best achievable worst case is <b>${fmt(hycasPlan.achievedMaxDist,0)} mi / ${fmtHours(hycasPlan.achievedMaxHours)}</b>, still short of your ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h targets. Consider adding candidate staging facilities or adjusting the targets.`
         : `real-road validation is expanding the search beyond ${hycasPlan.k} facility-based unit(s). Current worst case is <b>${fmt(hycasPlan.achievedMaxDist,0)} mi / ${fmtHours(hycasPlan.achievedMaxHours)}</b> versus your ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h targets.`}
