@@ -1,7 +1,9 @@
 // Public hydrogen infrastructure proxy for NREL's Alternative Fuels Data Center.
 // Keep NREL_API_KEY in Netlify environment variables; never place it in index.html.
 
-const NREL_URL = 'https://developer.nrel.gov/api/alt-fuel-stations/v1.json';
+// The laboratory moved its developer APIs from developer.nrel.gov to developer.nlr.gov
+// and retired the old hostname on May 29, 2026.
+const NREL_URL = 'https://developer.nlr.gov/api/alt-fuel-stations/v1.json';
 
 const response = (statusCode, body, cache = 'no-store') => ({
   statusCode,

@@ -877,7 +877,10 @@ async function refreshPlacementRoadDistances(locations){
       });
       colStart += loc.covered.length;
     });
-    placementRoadCache = newCache;
+    // Keep matrices already fetched for the other placement sections. Replacing the entire
+    // cache here caused the Hub and HyCAS plans to evict one another and alternate requests on
+    // every render until the routing provider rate-limited the site.
+    newCache.forEach((value,key)=>placementRoadCache.set(key,value));
     placementRoadStatus = 'ready';
     placementRoadError = '';
   } catch(err){
@@ -892,6 +895,14 @@ function maybeRefreshPlacementRoadDistances(locations){
   if(!ROUTE_ENDPOINT_URL){ placementRoadStatus = 'unconfigured'; return; }
   if(placementRoadStatus==='loading') return;
   if(locations.length===0) return;
+  const allCached = locations.every(loc=>
+    loc.covered.every(node=>placementRoadCache.has(placementRoadKey(loc.lat,loc.lon,node.id)))
+  );
+  if(allCached){
+    placementRoadStatus='ready';
+    placementRoadError='';
+    return;
+  }
   const signature = placementSignature(locations);
   if(signature===placementRoadLastSignature && (placementRoadStatus==='ready' || placementRoadStatus==='error')) return;
   refreshPlacementRoadDistances(locations);
