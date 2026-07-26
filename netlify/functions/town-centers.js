@@ -1,7 +1,23 @@
 const ORS_REVERSE_URL = 'https://api.openrouteservice.org/geocode/reverse';
 
+function allowedOrigin(event){
+  const headers=event.headers||{};
+  const raw=headers.origin||headers.Origin||'';
+  let origin=raw;
+  if(!origin){
+    try { origin=new URL(headers.referer||headers.Referer||'').origin; } catch (_) {}
+  }
+  const allowed=new Set([
+    process.env.URL,process.env.DEPLOY_PRIME_URL,
+    ...(process.env.ALLOWED_ORIGINS||'').split(','),
+    'http://localhost:8888',
+  ].map(v=>(v||'').trim().replace(/\/$/,'')).filter(Boolean));
+  return origin&&allowed.has(origin.replace(/\/$/,''));
+}
+
 exports.handler = async function(event) {
   if (event.httpMethod !== 'POST') return {statusCode:405, body:'Method not allowed'};
+  if (!allowedOrigin(event)) return {statusCode:403,body:'Origin not allowed'};
   if (!process.env.ORS_API_KEY) return {statusCode:500, body:'Set ORS_API_KEY in Netlify environment variables'};
 
   let body;

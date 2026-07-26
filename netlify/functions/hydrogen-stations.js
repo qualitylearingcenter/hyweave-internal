@@ -1,7 +1,23 @@
 const STATIONS_URL='https://developer.nlr.gov/api/alt-fuel-stations/v1.json';
 
+function allowedOrigin(event){
+  const headers=event.headers||{};
+  const raw=headers.origin||headers.Origin||'';
+  let origin=raw;
+  if(!origin){
+    try { origin=new URL(headers.referer||headers.Referer||'').origin; } catch (_) {}
+  }
+  const allowed=new Set([
+    process.env.URL,process.env.DEPLOY_PRIME_URL,
+    ...(process.env.ALLOWED_ORIGINS||'').split(','),
+    'http://localhost:8888',
+  ].map(v=>(v||'').trim().replace(/\/$/,'')).filter(Boolean));
+  return origin&&allowed.has(origin.replace(/\/$/,''));
+}
+
 exports.handler=async function(event) {
   if (event.httpMethod!=='GET') return {statusCode:405,body:'Method not allowed'};
+  if (!allowedOrigin(event)) return {statusCode:403,body:'Origin not allowed'};
   try {
     const url=new URL(STATIONS_URL);
     url.searchParams.set('api_key',process.env.NLR_API_KEY||process.env.NREL_API_KEY||'DEMO_KEY');

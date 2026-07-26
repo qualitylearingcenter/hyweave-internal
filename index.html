@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HyWeave build: 2026-07-26-complete-direct-backup-1 -->
+<!-- HyWeave build: 2026-07-26-secure-routing-email-1 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -628,9 +628,9 @@ let S = {
 // function (notify-outage.js) that actually sends the email — the customer page can only trigger
 // it, never choose who it goes to (that's fixed server-side, deliberately).
 const PORTAL_MODE = false;
-const NOTIFY_ENDPOINT_URL = '';
+const NOTIFY_ENDPOINT_URL = '/.netlify/functions/notify-outage';
 const NOTIFY_SECRET = '';
-const NOTIFY_FALLBACK_TEXT = '';
+const NOTIFY_FALLBACK_TEXT = 'Please contact your operations team directly.';
 const ROUTE_ENDPOINT_URL = '/.netlify/functions/route-distance';
 const HYDROGEN_DATA_ENDPOINT_URL = '/.netlify/functions/hydrogen-stations';
 const TOWN_CENTER_ENDPOINT_URL = '/.netlify/functions/town-centers';
@@ -1736,7 +1736,7 @@ async function sendOutageNotification(sc){
   const {subject, body} = buildNotifyContent(sc);
   const resp = await fetch(NOTIFY_ENDPOINT_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Notify-Secret': NOTIFY_SECRET },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ subject, text: body }),
   });
   if(!resp.ok){
@@ -2392,8 +2392,8 @@ function renderScenarioTab(){
         ${PORTAL_MODE
           ? `<button class="btn btn-small btn-primary" id="btnNotifyTeam">📨 Report Outage &amp; Notify Us</button>
              <span id="notifyStatus" style="font-size:11px;margin-left:8px"></span>`
-          : `<button class="btn btn-small btn-outline" id="btnNotifyTeam">📧 Draft Outage Notification Email</button>
-             ${!S.notifyEmail?'<span style="color:#AAB2BD;font-size:11px;margin-left:8px">Set a notification email address on the left first</span>':''}`}
+          : `<button class="btn btn-small btn-primary" id="btnNotifyTeam">📨 Send Outage Notification</button>
+             <span id="notifyStatus" style="font-size:11px;margin-left:8px"></span>`}
       </div>`:''}
     </div>
     ${sc.affected.length>0?`
@@ -2482,9 +2482,8 @@ function renderScenarioTab(){
         <h2>Outage Notification</h2>
         ${PORTAL_MODE
           ? `<p class="desc">After previewing the impact, "Report Outage &amp; Notify Us" sends this directly to our operations team — automatically, with no email app to open and nothing further for you to do.</p>`
-          : `<p class="desc">After running a scenario, drafts an email summarizing the outage and sends it to whoever you designate below — for example, your own operations inbox. This opens <b>your device's default email app</b> with everything pre-filled; it does not send anything silently or automatically in the background, so review it and hit send yourself.</p>
-             <div class="field"><label>Notify This Email Address</label><input id="fNotifyEmail" type="email" placeholder="ops@yourcompany.com" value="${esc(S.notifyEmail||'')}"></div>
-             <div class="note" style="margin-top:0">True zero-click automated delivery (no email app, no manual send) requires a small backend service this tool can call — ask if you'd like that scoped out.</div>`}
+          : `<p class="desc">After running a scenario, “Send Outage Notification” delivers the report automatically to the operations recipient configured securely in Netlify.</p>
+             <div class="note" style="margin-top:0">The destination address is controlled by the server-side <b>OUTAGE_NOTIFY_TO</b> environment variable and is never exposed in this page.</div>`}
       </div>
       <div class="note" style="margin-top:0">This does not touch your live Optimization Results — sourcing, hubs, and risk there are unaffected by running a scenario here. Hub locations and trailer counts stay fixed at what Optimization Results computed; this only asks how that standing plan performs under the disruptions you pick.</div>
     </div>
@@ -3611,22 +3610,16 @@ function attachHandlers(){
   const btnNotifyTeam = document.getElementById('btnNotifyTeam');
   if(btnNotifyTeam) btnNotifyTeam.addEventListener('click', async ()=>{
     if(!lastScenario){ alert('Run a scenario first.'); return; }
-    if(PORTAL_MODE){
-      const statusEl = document.getElementById('notifyStatus');
-      btnNotifyTeam.disabled = true;
-      if(statusEl){ statusEl.style.color = 'var(--muted)'; statusEl.textContent = 'Sending…'; }
-      try{
-        await sendOutageNotification(lastScenario);
-        if(statusEl){ statusEl.style.color = '#177A4C'; statusEl.textContent = '✓ Sent — our team has been notified.'; }
-      } catch(err){
-        if(statusEl){ statusEl.style.color = 'var(--red)'; statusEl.innerHTML = `Could not send automatically (${esc(err.message)}). ${esc(NOTIFY_FALLBACK_TEXT)}`; }
-      } finally {
-        btnNotifyTeam.disabled = false;
-      }
-    } else {
-      if(!S.notifyEmail){ alert('Enter a notification email address first.'); return; }
-      const mailtoUrl = buildNotifyMailto(lastScenario, S.notifyEmail);
-      window.location.href = mailtoUrl;
+    const statusEl = document.getElementById('notifyStatus');
+    btnNotifyTeam.disabled = true;
+    if(statusEl){ statusEl.style.color = 'var(--muted)'; statusEl.textContent = 'Sending…'; }
+    try{
+      await sendOutageNotification(lastScenario);
+      if(statusEl){ statusEl.style.color = '#177A4C'; statusEl.textContent = '✓ Sent — the operations team has been notified.'; }
+    } catch(err){
+      if(statusEl){ statusEl.style.color = 'var(--red)'; statusEl.innerHTML = `Could not send automatically (${esc(err.message)}). ${esc(NOTIFY_FALLBACK_TEXT)}`; }
+    } finally {
+      btnNotifyTeam.disabled = false;
     }
   });
   document.querySelectorAll('[data-checkall]').forEach(btn=>btn.addEventListener('click', ()=>{
