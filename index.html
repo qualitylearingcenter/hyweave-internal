@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HyWeave build: 2026-07-26-routing-stable-1 -->
+<!-- HyWeave build: 2026-07-26-claude-merge-repaired-1 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -475,12 +475,56 @@ function downloadTemplate(kind){
   } else if(kind==='asset'){
     csv = 'name,type,capacity\nCompression Unit A,compression,1200\nStorage Tank 1,storage,5000\n';
     filename = 'assets_template.csv';
+  } else if(kind==='distanceOverrides'){
+    const rows = ['demand_node,supply_source,distance_miles,duration_hours,google_maps_link_click_to_look_up'];
+    S.demand.forEach(n=>{
+      activeSupply().forEach(s=>{
+        const link = `https://www.google.com/maps/dir/?api=1&origin=${n.lat},${n.lon}&destination=${s.lat},${s.lon}&travelmode=driving`;
+        rows.push(`"${n.name.replace(/"/g,'""')}","${s.name.replace(/"/g,'""')}",,,${link}`);
+      });
+    });
+    csv = rows.join('\n') + '\n';
+    filename = 'distance_overrides_template.csv';
   } else {
     csv = 'name,city,lat,lon,capacity,cost,status\nExample Source,"Baytown, TX",29.7355,-94.9774,2000,2.10,current\n';
     filename = 'supply_sources_template.csv';
   }
   const blob = new Blob([csv], {type:'text/csv'});
   const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click();
+}
+
+function importDistanceOverridesCSV(file){
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    let objs;
+    try { objs = csvToObjects(e.target.result); } catch(err){ alert('Could not read CSV file: '+err.message); return; }
+    let added=0; const errors=[];
+    const norm = s => (s||'').trim().toLowerCase();
+    objs.forEach((o,idx)=>{
+      const nodeName = pick(o,['demand_node','demand node','node','node_name']);
+      const sourceName = pick(o,['supply_source','supply source','source','source_name']);
+      const distanceMiles = parseFloat(pick(o,['distance_miles','distance','miles']));
+      const durationHours = parseFloat(pick(o,['duration_hours','duration','hours']));
+      const node = S.demand.find(n=>norm(n.name)===norm(nodeName));
+      const source = S.supply.find(s=>norm(s.name)===norm(sourceName));
+      if(!node || !source){
+        errors.push(`Row ${idx+2}: "${nodeName}" / "${sourceName}" does not match a current demand node / supply source`);
+        return;
+      }
+      if(!Number.isFinite(distanceMiles) || !Number.isFinite(durationHours) || distanceMiles<=0 || durationHours<=0){
+        errors.push(`Row ${idx+2} (${nodeName} → ${sourceName}): invalid distance or duration`);
+        return;
+      }
+      S.distanceOverrides = S.distanceOverrides.filter(x=>!(x.nodeId===node.id && x.sourceId===source.id));
+      S.distanceOverrides.push({nodeId:node.id, sourceId:source.id, distanceMiles, durationHours});
+      added++;
+    });
+    roadDistanceLastSignature=null;
+    render();
+    alert(`Import complete: ${added} distance override(s) loaded.` +
+      (errors.length?`\n\n${errors.length} row(s) skipped:\n${errors.slice(0,10).join('\n')}`:''));
+  };
+  reader.readAsText(file);
 }
 
 function importDemandCSV(file){
@@ -563,7 +607,7 @@ function importAssetCSV(file){
 let S = {
   demand: [],
   supply: [],
-  params: { trailerCap:400, costPerMile:3.25, avgSpeed:48, safetyDays:3, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 },
+  params: { trailerCap:750, costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 },
   activeTab: 'demand',
   demandForm: null, // editing id or null
   supplyForm: null,
@@ -571,6 +615,7 @@ let S = {
   showTrailerRadius: true, showHycasRadius: true,
   assets: [], assetForm: null,
   assetPlacement: { safetyDays:3, targetRadius:400, targetHours:6 },
+  distanceOverrides: [],
   pricing: { mode:'buy', trailerPrice: 50000, hycasPrice: 250000, nodePrice: 0,
              trailerLeaseRate: 1500, hycasLeaseRate: 7500, nodeLeaseRate: 0, leaseTermMonths: 36,
              tierDays: '0.5,1,2,3', outputs: [], volumeDiscounts: [] },
@@ -718,10 +763,12 @@ function networkSignature(){
 // cached, straight-line (with a clear isReal:false flag) otherwise. This is the ONE place that
 // decides which to use, so every consumer (sourcing cost, risk tiering, the UI badge) agrees.
 function nodeSourceDistance(node, source){
+  const override = S.distanceOverrides.find(x=>x.nodeId===node.id && x.sourceId===source.id);
+  if(override) return { dist:override.distanceMiles, hours:override.durationHours, isReal:true, isOverride:true };
   const cached = roadDistanceCache.get(node.id+'|'+source.id);
-  if(cached) return { dist: cached.distanceMiles, hours: cached.durationHours, isReal: true };
+  if(cached) return { dist: cached.distanceMiles, hours: cached.durationHours, isReal: true, isOverride:false };
   const dist = haversineMiles(node.lat, node.lon, source.lat, source.lon);
-  return { dist, hours: dist/S.params.avgSpeed, isReal: false };
+  return { dist, hours: dist/S.params.avgSpeed, isReal: false, isOverride:false };
 }
 
 async function refreshRoadDistances(){
@@ -984,7 +1031,7 @@ function sampleData(){
     {id:uid(), name:'Oklahoma City Regional Fill', city:'Oklahoma City, OK', lat:35.4676, lon:-97.5164, capacity:700, cost:2.60, status:'current'},
     {id:uid(), name:'Planned Beaumont H2 Plant (2027)', city:'Beaumont, TX', lat:30.0802, lon:-94.1266, capacity:1500, cost:2.05, status:'future'},
   ];
-  S.params = { trailerCap:380, costPerMile:3.25, avgSpeed:48, safetyDays:3, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 };
+  S.params = { trailerCap:750, costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 };
 }
 
 /* ===================== OPTIMIZATION ===================== */
@@ -1961,7 +2008,7 @@ function renderParamsTab(){
     </div>
     <div class="field">
       <label>Target Max Resupply Time (hours): <span class="rangeval" id="pTargetHoursVal">${p.targetHours} h</span></label>
-      <input id="pTargetHours" type="range" min="0.5" max="12" step="0.5" value="${p.targetHours}">
+      <input id="pTargetHours" type="range" min="0.5" max="24" step="0.5" value="${p.targetHours}">
       <div class="note">What matters here is <b>where gas actually gets delivered</b>, not where it's sourced from. The tool automatically recommends the <b>smallest number of staging hubs</b> needed so every demand node is reachable from its hub within <b>both</b> the distance and time targets above — a node that violates either one is treated as higher risk in the Risk Assessment, regardless of how close its supply source is. Lower either lever for tighter, more resilient coverage (more hubs); raise them to consolidate into fewer hubs.</div>
     </div>
 
@@ -1985,6 +2032,29 @@ function renderParamsTab(){
 
 /* ===================== RENDER: RESULTS TAB ===================== */
 let lastComputed = null;
+function sourcingDistanceBadge(){
+  const overrideCount=S.distanceOverrides.length;
+  const totalPairs=S.demand.length*activeSupply().length;
+  if(totalPairs>0 && overrideCount>=totalPairs){
+    return '<span class="tag tag-low">\u2713 Real road distances (manual overrides)</span>';
+  }
+  if(roadDistanceStatus==='ready'){
+    const suffix=overrideCount?` + ${overrideCount} manual override(s)`:'';
+    if(roadDistanceProvider==='OSRM fallback'){
+      return `<span class="tag tag-med" title="Uses real roads, but is not verified for truck restrictions.">\u26a0 Real road distances (OSRM fallback \u2014 not truck-verified)${suffix}</span>`;
+    }
+    return `<span class="tag tag-low">\u2713 Real road distances (${esc(roadDistanceProvider||'routing provider')})${suffix}</span>`;
+  }
+  if(roadDistanceStatus==='loading') return '<span class="tag tag-med">Fetching real road distances\u2026</span>';
+  if(roadDistanceStatus==='error'){
+    return `<span class="tag tag-high" title="${esc(roadDistanceError)}">\u26a0 Real routing failed \u2014 showing straight-line</span> <a href="#" id="lnkRetryRoadDistance" style="font-size:11px;color:var(--blue);margin-left:6px">Retry</a>`+
+      (overrideCount?` <span style="font-size:11px;color:#AAB2BD">(${overrideCount} manual override(s) still applied)</span>`:'');
+  }
+  return overrideCount
+    ? `<span class="tag tag-med">${overrideCount} of ${totalPairs} pair(s) manually overridden</span>`
+    : '<span class="tag tag-med">Straight-line distance (real routing not configured)</span>';
+}
+
 // Shared status badge for hub/HyCAS/Asset Placement reach figures — same states as the Sourcing
 // Plan's road-distance badge, since it's the same underlying cache.
 function placementReachBadge(){
@@ -2139,10 +2209,7 @@ function renderResultsTab(){
   <div class="card">
     <div class="flexbetween">
       <h2 style="margin-bottom:0">Sourcing Plan</h2>
-      ${roadDistanceStatus==='ready'?`<span class="tag tag-low">\u2713 Real road distances (${esc(roadDistanceProvider||'routing provider')})</span>`
-        :roadDistanceStatus==='loading'?'<span class="tag tag-med">Fetching real road distances\u2026</span>'
-        :roadDistanceStatus==='error'?'<span class="tag tag-high" title="'+esc(roadDistanceError)+'">\u26a0 Real routing failed \u2014 showing straight-line</span> <a href="#" id="lnkRetryRoadDistance" style="font-size:11px;color:var(--blue);margin-left:6px">Retry</a>'
-        :'<span class="tag tag-med">Straight-line distance (real routing not configured)</span>'}
+      ${sourcingDistanceBadge()}
     </div>
     <p class="desc">Least-landed-cost assignment of supply sources to demand nodes, respecting source capacity. Trailers are always dispatched full, so daily volume is rounded up to whole trailer loads — cost reflects that.</p>
     <table><thead><tr><th>Demand Node</th><th>Assigned Source</th><th>Distance (mi)</th><th>Travel Time</th><th>Volume (${S.params.unit}/day)</th><th>Trailers/day</th><th>Landed Cost ($/${S.params.unit})</th><th>Daily Cost</th></tr></thead>
@@ -2167,6 +2234,25 @@ function renderResultsTab(){
     }).join('')}
     </tbody></table>
     <div class="note">Trailers/day = ceil(volume assigned on that lane ÷ trailer capacity) — a lane moving even 1 kg over a full trailer's capacity requires a second trailer, so landed cost per ${S.params.unit} can run higher than the simple distance-based rate on low-volume lanes.</div>
+  </div>
+
+  <div class="card">
+    <div class="flexbetween">
+      <h2 style="margin-bottom:0">Distance Overrides <span style="color:#AAB2BD;font-weight:400">(${S.distanceOverrides.length})</span></h2>
+      <div class="toolbar">
+        <button class="btn btn-small btn-outline" id="btnDistOverrideTemplate">Download Template</button>
+        <button class="btn btn-small btn-outline" id="btnDistOverrideImport">Import CSV</button>
+        <input type="file" id="distOverrideCsvFile" accept=".csv" style="display:none">
+      </div>
+    </div>
+    <p class="desc">Optional lane-specific road distances. Download the template, use its Google Maps links, enter distance and duration, then import. Manual values override live routing for matching lanes.</p>
+    ${S.distanceOverrides.length===0?'<div class="empty">No manual overrides loaded.</div>':`
+    <table><thead><tr><th>Demand Node</th><th>Supply Source</th><th>Distance</th><th>Duration</th><th></th></tr></thead>
+    <tbody>${S.distanceOverrides.map(o=>{
+      const n=S.demand.find(x=>x.id===o.nodeId), s=S.supply.find(x=>x.id===o.sourceId);
+      if(!n||!s) return '';
+      return `<tr><td>${esc(n.name)}</td><td>${esc(s.name)}</td><td>${fmt(o.distanceMiles,1)} mi</td><td>${fmtHours(o.durationHours)}</td><td><button class="btn btn-small btn-danger" data-del-dist-override="${o.nodeId}|${o.sourceId}">Remove</button></td></tr>`;
+    }).join('')}</tbody></table>`}
   </div>
 
   <div class="card">
@@ -3173,6 +3259,21 @@ function attachHandlers(){
     render();
   }));
 
+  const btnDistOverrideTemplate=document.getElementById('btnDistOverrideTemplate');
+  if(btnDistOverrideTemplate) btnDistOverrideTemplate.addEventListener('click',()=>downloadTemplate('distanceOverrides'));
+  const btnDistOverrideImport=document.getElementById('btnDistOverrideImport');
+  if(btnDistOverrideImport) btnDistOverrideImport.addEventListener('click',()=>document.getElementById('distOverrideCsvFile').click());
+  const distOverrideCsvFile=document.getElementById('distOverrideCsvFile');
+  if(distOverrideCsvFile) distOverrideCsvFile.addEventListener('change',e=>{
+    if(e.target.files[0]) importDistanceOverridesCSV(e.target.files[0]);
+    e.target.value='';
+  });
+  document.querySelectorAll('[data-del-dist-override]').forEach(b=>b.addEventListener('click',()=>{
+    const [nodeId,sourceId]=b.dataset.delDistOverride.split('|');
+    S.distanceOverrides=S.distanceOverrides.filter(x=>!(x.nodeId===nodeId&&x.sourceId===sourceId));
+    render();
+  }));
+
   const btnSaveDemand = document.getElementById('btnSaveDemand');
   if(btnSaveDemand) btnSaveDemand.addEventListener('click', ()=>{
     const name = document.getElementById('fName').value.trim();
@@ -3196,7 +3297,11 @@ function attachHandlers(){
 
   document.querySelectorAll('[data-edit-demand]').forEach(b=>b.addEventListener('click', ()=>{ S.demandForm=b.dataset.editDemand; render(); }));
   document.querySelectorAll('[data-del-demand]').forEach(b=>b.addEventListener('click', ()=>{
-    if(confirm('Delete this demand node?')){ S.demand = S.demand.filter(n=>n.id!==b.dataset.delDemand); render(); }
+    if(confirm('Delete this demand node?')){
+      S.demand = S.demand.filter(n=>n.id!==b.dataset.delDemand);
+      S.distanceOverrides = S.distanceOverrides.filter(o=>o.nodeId!==b.dataset.delDemand);
+      render();
+    }
   }));
 
   const btnDemandTemplate = document.getElementById('btnDemandTemplate');
@@ -3234,7 +3339,11 @@ function attachHandlers(){
 
   document.querySelectorAll('[data-edit-supply]').forEach(b=>b.addEventListener('click', ()=>{ S.supplyForm=b.dataset.editSupply; render(); }));
   document.querySelectorAll('[data-del-supply]').forEach(b=>b.addEventListener('click', ()=>{
-    if(confirm('Delete this supply source?')){ S.supply = S.supply.filter(n=>n.id!==b.dataset.delSupply); render(); }
+    if(confirm('Delete this supply source?')){
+      S.supply = S.supply.filter(n=>n.id!==b.dataset.delSupply);
+      S.distanceOverrides = S.distanceOverrides.filter(o=>o.sourceId!==b.dataset.delSupply);
+      render();
+    }
   }));
 
   const btnSupplyTemplate = document.getElementById('btnSupplyTemplate');
@@ -3508,7 +3617,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:400,costPerMile:3.25,avgSpeed:48,safetyDays:3,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000}, activeTab:'demand', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
+    S = { demand:[], supply:[], params:{trailerCap:750,costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000}, activeTab:'demand', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
     lastScenario = null;
     render();
   }
@@ -3523,6 +3632,7 @@ if(btnSaveScenarioTop) btnSaveScenarioTop.addEventListener('click', ()=>{
     demand: S.demand,
     supply: S.supply,
     params: S.params,
+    distanceOverrides: S.distanceOverrides,
     results: lastComputed ? {
       kpi: lastComputed.kpi,
       hubs: lastComputed.hubs.map(h=>({
@@ -3578,10 +3688,15 @@ function applyScenarioFile(file, onDone){
     try{
       const data = JSON.parse(ev.target.result);
       if(!Array.isArray(data.demand) || !Array.isArray(data.supply)) throw new Error('File does not look like a saved scenario (missing demand/supply arrays).');
-      const defaults = {trailerCap:400,costPerMile:3.25,avgSpeed:48,safetyDays:3,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000};
+      const defaults = {trailerCap:750,costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000};
       S.demand = data.demand.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), rate:parseFloat(n.rate), safetyDays:parseFloat(n.safetyDays)||defaults.safetyDays }));
       S.supply = data.supply.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), capacity:parseFloat(n.capacity), cost:parseFloat(n.cost), status:(n.status==='future'?'future':'current') }));
       S.params = Object.assign({}, defaults, data.params||{});
+      S.distanceOverrides = Array.isArray(data.distanceOverrides)
+        ? data.distanceOverrides.filter(o=>o && o.nodeId && o.sourceId && Number.isFinite(Number(o.distanceMiles)) && Number.isFinite(Number(o.durationHours))).map(o=>({
+            nodeId:o.nodeId, sourceId:o.sourceId, distanceMiles:Number(o.distanceMiles), durationHours:Number(o.durationHours)
+          }))
+        : [];
       S.demandForm=null; S.supplyForm=null;
       onDone(null, data);
     } catch(err){
