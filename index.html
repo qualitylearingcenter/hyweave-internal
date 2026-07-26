@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HyWeave build: 2026-07-26-exact-hub-pdf-export-1 -->
+<!-- HyWeave build: 2026-07-26-central-inputs-split-reports-1 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -20,6 +20,8 @@
     --danger-bg:#fdecec; --dropdown-hover:#F0F6FC;
     --status-ok-bg:#F3FBF7; --status-ok-border:#CDE9DC; --status-ok-text:#29463A; --status-ok-accent:#177A4C;
     --status-warn-bg:#FFFBF0; --status-warn-border:#E6C978; --status-warn-text:#4A3A18; --status-warn-accent:#8A5400;
+    --scenario-bg:#EFF6FF; --scenario-border:#9CC7F0; --scenario-text:#17324F; --scenario-accent:#0069B4;
+    --drop-bg:#F7FBFF; --drop-border:#78B5E8;
   }
   [data-theme="dark"]{
     --headerbg:#050A12; --headertext:#FFFFFF; --heading:#EDF1F7;
@@ -36,6 +38,8 @@
     --danger-bg:#3A1B22; --dropdown-hover:#232E3D;
     --status-ok-bg:#142D22; --status-ok-border:#286447; --status-ok-text:#DDF5E8; --status-ok-accent:#5FCF9B;
     --status-warn-bg:#302713; --status-warn-border:#806426; --status-warn-text:#F6E9C3; --status-warn-accent:#F2C46D;
+    --scenario-bg:#132942; --scenario-border:#356996; --scenario-text:#E7F2FF; --scenario-accent:#75BDFA;
+    --drop-bg:#142334; --drop-border:#4D8EC5;
   }
   *{box-sizing:border-box;}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);transition:background .15s,color .15s;}
@@ -111,6 +115,13 @@
   .status-card.status-ok{color:var(--status-ok-text);background:var(--status-ok-bg);border-color:var(--status-ok-border);}
   .status-card .status-title{color:var(--status-warn-accent);}
   .status-card.status-ok .status-title{color:var(--status-ok-accent);}
+  .scenario-banner{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;border-color:var(--scenario-border);background:var(--scenario-bg);color:var(--scenario-text);}
+  .scenario-banner b{color:var(--scenario-text);}
+  .scenario-banner .scenario-accent{color:var(--scenario-accent);font-weight:650;}
+  .import-dropzone{border:2px dashed var(--drop-border);background:var(--drop-bg);border-radius:10px;padding:24px;text-align:center;cursor:pointer;transition:.15s;}
+  .import-dropzone.dragover{border-color:var(--blue);transform:translateY(-1px);box-shadow:0 5px 16px var(--shadow);}
+  .import-dropzone h3{margin:0 0 6px;color:var(--heading);font-size:15px;}
+  .import-dropzone p{margin:0;color:var(--muted);font-size:11.5px;line-height:1.5;}
   .flexbetween{display:flex;justify-content:space-between;align-items:center;}
   .searchwrap{position:relative;}
   .acdropdown{position:absolute;top:100%;left:0;right:0;background:var(--panel);border:1px solid var(--border);border-radius:6px;box-shadow:0 6px 18px var(--shadow);max-height:190px;overflow:auto;z-index:30;margin-top:2px;}
@@ -168,15 +179,15 @@
   </header>
   <nav class="tabs" id="tabs">
     <!-- PORTAL_BLOCK_START -->
-    <button data-tab="demand" class="active">Demand Nodes <span class="count" id="cntDemand">0</span></button>
+    <button data-tab="params" class="active">Input Parameters</button>
     <button data-tab="supply">Supply Sources <span class="count" id="cntSupply">0</span></button>
-    <button data-tab="params">Parameters</button>
+    <button data-tab="demand">Demand Nodes <span class="count" id="cntDemand">0</span></button>
     <button data-tab="results">Optimization Results</button>
     <button data-tab="assets">Asset Placement</button>
     <!-- PORTAL_BLOCK_END -->
     <button data-tab="scenario" class="">Scenario Planning</button>
     <!-- PRICING_BLOCK_START -->
-    <button data-tab="pricing">Pricing Model</button>
+    <button data-tab="pricing">Pricing</button>
     <!-- PRICING_BLOCK_END -->
   </nav>
   <main id="main"></main>
@@ -616,7 +627,7 @@ let S = {
   demand: [],
   supply: [],
   params: { trailerCap:750, costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 },
-  activeTab: 'demand',
+  activeTab: 'params',
   demandForm: null, // editing id or null
   supplyForm: null,
   scenarioSourceIds: [], scenarioNodeIds: [], scenarioDays: 3, scenarioTurnaround: 2, notifyEmail: '',
@@ -1982,6 +1993,81 @@ function downloadDiscountTemplate(){
   const blob = new Blob([csv], {type:'text/csv'});
   const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='volume_discount_template.csv'; a.click();
 }
+
+function classifyInputRows(rows, label=''){
+  if(!rows.length) return null;
+  const keys = Object.keys(rows[0]).map(k=>k.toLowerCase());
+  const hint = label.toLowerCase();
+  if(hint.includes('discount') || hint.includes('pricing') || keys.some(k=>k.includes('discount'))) return 'pricing';
+  if(hint.includes('supply') || keys.some(k=>k==='capacity'||k==='fill capacity'||k==='fill_capacity')) return 'supply';
+  if(hint.includes('demand') || keys.some(k=>k==='rate'||k.includes('consumption'))) return 'demand';
+  return null;
+}
+function addDemandRows(objs){
+  let added=0; const errors=[];
+  objs.forEach((o,idx)=>{
+    const name=pick(o,['name','node name','node_name']);
+    const lat=parseFloat(pick(o,['lat','latitude'])), lon=parseFloat(pick(o,['lon','lng','longitude']));
+    const rate=parseFloat(pick(o,['rate','consumption rate','consumption_rate']));
+    const raw=pick(o,['safetydays','safety days','safety_days']);
+    const safetyDays=raw!==undefined?parseFloat(raw):S.params.safetyDays;
+    if(!name||isNaN(lat)||isNaN(lon)||isNaN(rate)){ errors.push(`row ${idx+2}`); return; }
+    S.demand.push({id:uid(),name,city:pick(o,['city','location'])||'',lat,lon,rate,safetyDays:isNaN(safetyDays)?S.params.safetyDays:safetyDays}); added++;
+  });
+  return {added,errors};
+}
+function addSupplyRows(objs){
+  let added=0; const errors=[];
+  objs.forEach((o,idx)=>{
+    const name=pick(o,['name','source name','source_name']);
+    const lat=parseFloat(pick(o,['lat','latitude'])), lon=parseFloat(pick(o,['lon','lng','longitude']));
+    const capacity=parseFloat(pick(o,['capacity','fill capacity','fill_capacity']));
+    const cost=parseFloat(pick(o,['cost','unit cost','unit_cost']));
+    if(!name||isNaN(lat)||isNaN(lon)||isNaN(capacity)||isNaN(cost)){ errors.push(`row ${idx+2}`); return; }
+    const raw=(pick(o,['status'])||'current').toLowerCase().trim();
+    S.supply.push({id:uid(),name,city:pick(o,['city','location'])||'',lat,lon,capacity,cost,status:raw==='future'||raw==='planned'?'future':'current'}); added++;
+  });
+  return {added,errors};
+}
+function rowsFromSheet(sheet){
+  return XLSX.utils.sheet_to_json(sheet,{defval:''}).map(r=>{
+    const lower={}; Object.keys(r).forEach(k=>{lower[k.toString().trim().toLowerCase()]=r[k];}); return lower;
+  });
+}
+async function importMasterFiles(files){
+  if(S.activeTab==='params') commitParamsForm();
+  const totals={demand:0,supply:0,pricing:0,skipped:0}; const messages=[];
+  for(const file of files){
+    try{
+      const lower=file.name.toLowerCase();
+      let sets=[];
+      if(lower.endsWith('.xlsx')||lower.endsWith('.xls')){
+        if(typeof XLSX==='undefined') throw new Error('Excel reader unavailable');
+        const wb=XLSX.read(new Uint8Array(await file.arrayBuffer()),{type:'array'});
+        sets=wb.SheetNames.map(name=>({label:`${file.name} / ${name}`,rows:rowsFromSheet(wb.Sheets[name])}));
+      }else{
+        sets=[{label:file.name,rows:csvToObjects(await file.text())}];
+      }
+      let recognized=false;
+      sets.forEach(set=>{
+        const kind=classifyInputRows(set.rows,set.label);
+        if(!kind||!set.rows.length){ totals.skipped++; return; }
+        recognized=true;
+        if(kind==='demand'){ const r=addDemandRows(set.rows); totals.demand+=r.added; if(r.errors.length) messages.push(`${set.label}: ${r.errors.length} demand row(s) skipped`); }
+        if(kind==='supply'){ const r=addSupplyRows(set.rows); totals.supply+=r.added; if(r.errors.length) messages.push(`${set.label}: ${r.errors.length} supply row(s) skipped`); }
+        if(kind==='pricing'){
+          const r=normalizeDiscountRows(set.rows);
+          if(r.rows.length){ S.pricing.volumeDiscounts=r.rows; totals.pricing+=r.rows.length; }
+          if(r.errors.length) messages.push(`${set.label}: ${r.errors.length} pricing row(s) skipped`);
+        }
+      });
+      if(!recognized) messages.push(`${file.name}: could not identify Demand, Supply, or Pricing columns`);
+    }catch(error){ messages.push(`${file.name}: ${error.message}`); }
+  }
+  roadDistanceLastSignature=null; placementRoadLastSignature=null; render();
+  alert(`Input import complete\n\nDemand nodes added: ${totals.demand}\nSupply sources added: ${totals.supply}\nPricing brackets loaded: ${totals.pricing}`+
+    (messages.length?`\n\nNotes:\n${messages.slice(0,12).join('\n')}`:''));
+}
 /* PRICING_BLOCK_END */
 
 /* ===================== RENDER: SHELL ===================== */
@@ -2040,14 +2126,9 @@ function renderDemandTab(){
     <div class="card">
       <div class="flexbetween">
         <h2 style="margin-bottom:0">Demand Nodes (${S.demand.length})</h2>
-        <div class="toolbar" style="margin-bottom:0">
-          <button class="btn btn-small btn-outline" id="btnDemandTemplate">Download CSV Template</button>
-          <button class="btn btn-small btn-outline" id="btnDemandImport">Import CSV</button>
-          <input type="file" id="demandCsvFile" accept=".csv" style="display:none">
-        </div>
       </div>
-      <p class="desc">Locations requiring gas supply. Columns: name, city, lat, lon, rate, safetyDays.</p>
-      ${S.demand.length===0?'<div class="empty">No demand nodes yet. Add one on the left, bulk import a CSV above, or click "Load Sample Data" in the header.</div>':`
+      <p class="desc">Locations requiring gas supply. Bulk files are loaded from Input Parameters.</p>
+      ${S.demand.length===0?'<div class="empty">No demand nodes yet. Add one on the left, import files on Input Parameters, or click "Load Sample Data" in the header.</div>':`
       <table><thead><tr><th>Name</th><th>Location</th><th>Rate (${S.params.unit}/day)</th><th>Safety Days</th><th></th></tr></thead>
       <tbody>
       ${[...S.demand].sort((a,b)=>naturalCompare(a.name,b.name)).map(n=>`
@@ -2128,13 +2209,8 @@ function renderSupplyTab(){
       <div class="card">
         <div class="flexbetween">
           <h2 style="margin-bottom:0">Current Supply Sources (${current.length})</h2>
-          <div class="toolbar" style="margin-bottom:0">
-            <button class="btn btn-small btn-outline" id="btnSupplyTemplate">Download CSV Template</button>
-            <button class="btn btn-small btn-outline" id="btnSupplyImport">Import CSV</button>
-            <input type="file" id="supplyCsvFile" accept=".csv" style="display:none">
-          </div>
         </div>
-        <p class="desc">Operational today. Always included in the optimization. Bulk import columns: name, city, lat, lon, capacity, cost, status.</p>
+        <p class="desc">Operational today. Always included in the optimization. Bulk files are loaded from Input Parameters.</p>
         ${supplyRows(current)}
       </div>
       <div class="card" style="border-color:${S.params.includeFuture?'#CDE0F5':'var(--border)'}">
@@ -2158,6 +2234,22 @@ function renderSupplyTab(){
 function renderParamsTab(){
   const p = S.params;
   return `
+  <div class="card">
+    <h2>Network Input Files</h2>
+    <p class="desc">One place to load demand nodes, supply sources, and pricing discounts. Drop several CSV files at once, or one Excel workbook with clearly named sheets.</p>
+    <div class="import-dropzone" id="masterImportDropzone" role="button" tabindex="0">
+      <h3>Drop input files here</h3>
+      <p>Accepted: CSV, XLSX, XLS. Files are identified by their sheet name and columns, then routed automatically to Supply Sources, Demand Nodes, or Pricing.</p>
+      <button class="btn btn-primary" id="btnMasterImport" style="margin-top:12px">Choose Files</button>
+      <input type="file" id="masterImportFiles" accept=".csv,.xlsx,.xls" multiple style="display:none">
+    </div>
+    <div class="toolbar" style="margin-top:12px;margin-bottom:0">
+      <span style="font-size:11px;color:var(--muted);font-weight:700">TEMPLATES</span>
+      <button class="btn btn-small btn-outline" id="btnDemandTemplateMaster">Demand Nodes</button>
+      <button class="btn btn-small btn-outline" id="btnSupplyTemplateMaster">Supply Sources</button>
+      <button class="btn btn-small btn-outline" id="btnPricingTemplateMaster">Pricing Discounts</button>
+    </div>
+  </div>
   <div class="card" style="max-width:640px">
     <h2>Trailer &amp; Network Parameters</h2>
     <p class="desc">These global assumptions drive the sourcing and resiliency optimization.</p>
@@ -2259,13 +2351,13 @@ function renderResultsTab(){
 
   return `
   ${futureCount>0?`
-  <div class="card" style="padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-color:${S.params.includeFuture?'#CDE0F5':'var(--border)'};background:${S.params.includeFuture?'#F5F9FE':'#FAFBFC'}">
-    <div style="font-size:12.5px;color:var(--text)">
+  <div class="card scenario-banner">
+    <div style="font-size:12.5px">
       <b>Scenario:</b> ${S.params.includeFuture
-        ? `Current + Future sources <span style="color:var(--blue)">(${supply.length} of ${S.supply.length} sources active, including ${futureCount} planned)</span>`
-        : `Current sources only <span style="color:var(--muted)">(${supply.length} of ${S.supply.length} sources active — ${futureCount} planned source(s) excluded)</span>`}
+        ? `Current + Future sources <span class="scenario-accent">(${supply.length} of ${S.supply.length} sources active, including ${futureCount} planned)</span>`
+        : `Current sources only <span class="scenario-accent">(${supply.length} of ${S.supply.length} sources active — ${futureCount} planned source(s) excluded)</span>`}
     </div>
-    <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:${S.params.includeFuture?'var(--blue)':'var(--muted)'};cursor:pointer">
+    <label class="scenario-accent" style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
       <input type="checkbox" id="chkIncludeFutureQuick" ${S.params.includeFuture?'checked':''} style="width:15px;height:15px;cursor:pointer">
       Include future sources
     </label>
@@ -2295,7 +2387,7 @@ function renderResultsTab(){
           <option value="light" ${THEME!=='dark'?'selected':''}>☀ Light export</option>
           <option value="dark" ${THEME==='dark'?'selected':''}>🌙 Dark export</option>
         </select>
-        <button class="btn btn-small btn-outline" id="btnExportMapImg">⬇ Export Map PNG + Hub Details PDF</button>
+        <button class="btn btn-small btn-outline" id="btnExportMapImg">⬇ Export Map + Operational PDF + Sourcing PDF</button>
       </div>
     </div>
     <div class="toolbar">
@@ -2773,11 +2865,8 @@ function renderPricingTab(){
       </div>
       <div class="card">
         <h2>Volume Discount Table</h2>
-        <p class="desc">Import a spreadsheet of quantity-based discount brackets — applies to <b>both</b> buy and lease unit rates automatically. Bracket lookup uses each day-of-supply tier's own trailer count, so as that count moves between brackets, pricing updates accordingly.</p>
+        <p class="desc">Quantity-based discount brackets loaded from <b>Input Parameters</b> apply to both buy and lease unit rates automatically.</p>
         <div class="toolbar">
-          <button class="btn btn-small btn-outline" id="btnDiscountTemplate">Download Template</button>
-          <button class="btn btn-small btn-outline" id="btnDiscountImport">Import Discount Table</button>
-          <input type="file" id="discountFile" accept=".csv,.xlsx,.xls" style="display:none">
           ${p.volumeDiscounts.length>0?'<button class="btn btn-small btn-danger" id="btnDiscountClear">Clear Table</button>':''}
         </div>
         <p class="desc" style="margin-bottom:6px">Columns: <b>Product</b> (Trailer / HyCAS / Node), <b>Min Qty</b>, <b>Max Qty</b> (blank = no upper limit), <b>Discount %</b>. Min/Max are both inclusive.</p>
@@ -3063,7 +3152,7 @@ function buildPresentationSVG(exportTheme){
 
   // header
   svg += `<text x="36" y="52" font-size="30" font-weight="700" fill="${NAVY}">HyWeave — Network Map</text>`;
-  svg += `<text x="36" y="80" font-size="14" fill="${MUTED}">Sourcing assignments &amp; recommended resiliency staging hubs — Target Delivery Radius: ${fmt(S.params.targetRadius,0)} mi</text>`;
+  svg += `<text x="36" y="80" font-size="14" fill="${MUTED}">Sourcing assignments, network risk, and Mobile HyCAS coverage</text>`;
   svg += `<rect x="36" y="90" width="120" height="4" fill="#0071CE"/>`;
   svg += `<line x1="36" y1="100" x2="${VBW-36}" y2="100" stroke="${BORDER}" stroke-width="1"/>`;
 
@@ -3097,19 +3186,9 @@ function buildPresentationSVG(exportTheme){
     svg += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#8FA3BF" stroke-width="${w.toFixed(2)}" opacity="0.5"/>`;
   });
 
-  // hub delivery radius circles + markers (respects the same on-screen toggle as the live map)
+  // Staging hubs are intentionally omitted from the PNG. Their full placement detail lives in
+  // the companion operational PDF, keeping the presentation map focused and uncluttered.
   const kmPerMile = 1.60934;
-  const deliveryRadiusPx = S.params.targetRadius * kmPerMile * mp.scale;
-  if(S.showTrailerRadius){
-    hubs.forEach(h=>{
-      const [x,y] = toMap(h.lat,h.lon);
-      svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${deliveryRadiusPx.toFixed(1)}" fill="#F2A900" fill-opacity="0.06" stroke="#F2A900" stroke-width="1.6" opacity="0.8"/>`;
-    });
-  }
-  hubs.forEach(h=>{
-    const [x,y] = toMap(h.lat,h.lon);
-    svg += `<g transform="translate(${x.toFixed(1)},${y.toFixed(1)}) rotate(45)"><rect x="-8" y="-8" width="16" height="16" fill="#F2A900" stroke="#fff" stroke-width="1.8"/></g>`;
-  });
 
   // Mobile HyCAS response circles + triangle markers
   const hycasRadiusPx = S.params.hycasRadius * kmPerMile * mp.scale;
@@ -3155,7 +3234,7 @@ function buildPresentationSVG(exportTheme){
   const hasFuture = S.supply.some(s=>(s.status||'current')==='future');
   const legendItems = [
     ['#C81E33','circle','High risk node'], ['#B57500','circle','Medium risk node'], ['#177A4C','circle','Low risk node'],
-    ['#0071CE','square','Current supply source'], ['#F2A900','diamond','Proposed staging hub'],
+    ['#0071CE','square','Current supply source'],
   ];
   legendItems.forEach(([color,shape,label])=>{
     const cx=sbX+26, cy=sy-4;
@@ -3169,11 +3248,6 @@ function buildPresentationSVG(exportTheme){
     const cx=sbX+26, cy=sy-4;
     svg += `<rect x="${cx-6}" y="${cy-6}" width="12" height="12" fill="${S.params.includeFuture?'#5B9BD9':PAL.MAPFILL}" stroke="#0071CE" stroke-width="1.3" stroke-dasharray="2,1.5" opacity="${S.params.includeFuture?1:0.55}"/>`;
     svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Future supply source ${S.params.includeFuture?'(included)':'(excluded)'}</text>`;
-    sy += 26;
-  }
-  if(S.showTrailerRadius){
-    svg += `<circle cx="${sbX+26}" cy="${sy-4}" r="7" fill="#F2A900" fill-opacity="0.08" stroke="#F2A900" stroke-width="1.3"/>`;
-    svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Delivery radius (${fmt(S.params.targetRadius,0)} mi)</text>`;
     sy += 26;
   }
   svg += `<polygon points="${sbX+26},${sy-11} ${sbX+34},${sy+3} ${sbX+18},${sy+3}" fill="#7A5195" stroke="#fff" stroke-width="1.2"/>`;
@@ -3196,12 +3270,9 @@ function buildPresentationSVG(exportTheme){
     ...(futureCount>0 ? [[`Scenario`, S.params.includeFuture?`Current + Future`:`Current only`]] : []),
     ...(futureCount>0 ? [[`Active sources`, `${activeSupplyCount} of ${S.supply.length}`]] : []),
     [`Total daily demand`, `${fmt(kpi.totalDemand)} ${S.params.unit}/day`],
-    [`One-time staging cost`, `${money(kpi.totalStagingCost,0)}`],
     [`Avg landed cost`, `${money(kpi.avgCost)}/${S.params.unit}`],
     [`Trailer trips/day`, `${kpi.totalDailyTrips}`],
     [`High-risk nodes`, `${kpi.highRisk} of ${S.demand.length}`],
-    [`Staging hubs`, `${hubs.length}`],
-    [`Staged trailers`, `${kpi.totalTrailers}`],
     [`Mobile HyCAS units`, `${(hycasUnits||[]).length}`],
   ];
   summaryLines.forEach(([label,val])=>{
@@ -3209,21 +3280,6 @@ function buildPresentationSVG(exportTheme){
     svg += `<text x="${sbX+sbW-18}" y="${sy}" font-size="12.5" font-weight="700" fill="${NAVY}" text-anchor="end">${esc(val)}</text>`;
     sy += 24;
   });
-  sy += 12;
-  svg += `<line x1="${sbX+18}" y1="${sy}" x2="${sbX+sbW-18}" y2="${sy}" stroke="${BORDER}" stroke-width="1"/>`;
-  sy += 30;
-
-  svg += `<text x="${sbX+18}" y="${sy}" font-size="12" font-weight="700" fill="${MUTED}">STAGING HUBS</text>`;
-  sy += 26;
-  hubs.slice(0,8).forEach(h=>{
-    const ref = h.cityRef ? `${h.cityRef.name}, ${h.cityRef.state}${h.townResolved?' · ~'+fmt(h.townOffsetMiles,0)+'mi from centroid':''}` : '';
-    svg += `<text x="${sbX+18}" y="${sy}" font-size="12.5" font-weight="700" fill="${TEXT}">Hub ${h.idx}</text>`;
-    svg += `<text x="${sbX+sbW-18}" y="${sy}" font-size="12.5" fill="${NAVY}" text-anchor="end">${h.trailers} trailers</text>`;
-    sy += 18;
-    svg += `<text x="${sbX+18}" y="${sy}" font-size="11" fill="${MUTED}">${esc(ref)}</text>`;
-    sy += 24;
-  });
-
   // footer
   svg += `<line x1="36" y1="${VBH-40}" x2="${VBW-36}" y2="${VBH-40}" stroke="${BORDER}" stroke-width="1"/>`;
   svg += `<text x="36" y="${VBH-16}" font-size="11.5" fill="${MUTED}">Generated by HyWeave — ${new Date().toLocaleDateString()}</text>`;
@@ -3318,8 +3374,8 @@ function buildHubDetailPageSVG(exportTheme, pageHubs=null, pageNumber=1, totalPa
   return buildTablePageSVG(exportTheme, 'Resiliency Staging Hubs — Detail', `${lastComputed.hubs.length} optimized hub(s) · ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails${pageLabel}`, columns, rows);
 }
 
-function buildHycasDetailPageSVG(exportTheme){
-  const hycasUnits = lastComputed.hycasUnits || [];
+function buildHycasDetailPageSVG(exportTheme, pageUnits=null, pageNumber=1, totalPages=1){
+  const hycasUnits = pageUnits || lastComputed.hycasUnits || [];
   const columns = [
     {label:'Unit', widthFrac:0.06},
     {label:'Proposed Location', widthFrac:0.22},
@@ -3338,7 +3394,64 @@ function buildHycasDetailPageSVG(exportTheme){
     `${fmt(u.maxNodeRate)} ${S.params.unit}/day`,
     u.capacitySufficient? 'Sufficient' : 'Insufficient',
   ]);
-  return buildTablePageSVG(exportTheme, 'Mobile HyCAS Units — Detail', `${hycasUnits.length} unit(s) proposed to hit the ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h response target`, columns, rows);
+  const pageLabel=totalPages>1?` — Page ${pageNumber} of ${totalPages}`:'';
+  return buildTablePageSVG(exportTheme, 'Mobile HyCAS Placement Plan', `${lastComputed.hycasUnits.length} unit(s) proposed to hit the ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h response target${pageLabel}`, columns, rows);
+}
+
+function buildRiskPageSVG(exportTheme, pageNodes, pageNumber=1, totalPages=1){
+  const columns=[
+    {label:'Demand Node',widthFrac:0.18},{label:'Consumption',widthFrac:0.12},
+    {label:'Serviced Via',widthFrac:0.21},{label:'Distance / Time',widthFrac:0.16},
+    {label:'Within Target',widthFrac:0.11},{label:'Primary Source',widthFrac:0.14},{label:'Risk',widthFrac:0.08},
+  ];
+  const rows=pageNodes.map(n=>{
+    const r=lastComputed.risk[n.id], summary=lastComputed.sourcing.nodeSummary[n.id];
+    const primary=summary&&summary.primary;
+    const sourceId=r.servicedVia==='source'&&r.directSourceId?r.directSourceId:(primary?primary.sourceId:null);
+    const source=sourceId?S.supply.find(s=>s.id===sourceId):null;
+    const via=r.servicedVia==='source'?`Direct: ${source?source.name:'source'}`
+      :r.servicedVia==='alternateHub'?`Alternate Hub ${r.selectedHubIdx}`
+      :r.servicedVia==='hub'?`Assigned Hub ${r.selectedHubIdx||r.hubIdx}`:'No qualifying route';
+    return [
+      n.name,`${fmt(n.rate)} ${S.params.unit}/day`,via,
+      r.tierDist!==undefined&&r.tierDist!==null?`${fmt(r.tierDist,0)} mi (${fmtHours(r.tierHours)})`:'—',
+      r.tier==='High'?'No':'Yes',source?source.name:'—',r.tier,
+    ];
+  });
+  const pageLabel=totalPages>1?` — Page ${pageNumber} of ${totalPages}`:'';
+  return buildTablePageSVG(exportTheme,'Risk Assessment',`${S.demand.length} demand node(s) · ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails${pageLabel}`,columns,rows);
+}
+
+function sourcingExportRows(){
+  const rows=[];
+  S.demand.forEach(n=>{
+    const summary=lastComputed.sourcing.nodeSummary[n.id];
+    if(!summary||!summary.flows.length){
+      rows.push([n.name,'No supply available','—','—',`${fmt(n.rate)} ${S.params.unit}/day`,'—','—','—']);
+      return;
+    }
+    summary.flows.forEach((f,i)=>{
+      const source=S.supply.find(s=>s.id===f.sourceId);
+      rows.push([
+        i===0?n.name:'',source?`${source.name}${i?' (secondary)':''}`:'—',
+        `${fmt(f.dist,0)} mi`,fmtHours(f.hours),`${fmt(f.amt,0)} ${S.params.unit}/day`,
+        `${f.trips}`,`${money(f.effectiveLanded)}/${S.params.unit}`,money(f.totalCost,0),
+      ]);
+    });
+    if(summary.unmet>0) rows.push(['','Unmet demand','—','—',`${fmt(summary.unmet)} ${S.params.unit}/day`,'—','—','—']);
+  });
+  return rows;
+}
+
+function buildSourcingPageSVG(exportTheme,pageRows,pageNumber=1,totalPages=1){
+  const columns=[
+    {label:'Demand Node',widthFrac:0.16},{label:'Assigned Source',widthFrac:0.18},
+    {label:'Distance',widthFrac:0.11},{label:'Travel Time',widthFrac:0.11},
+    {label:'Volume',widthFrac:0.13},{label:'Trailers / Day',widthFrac:0.10},
+    {label:'Landed Cost',widthFrac:0.11},{label:'Daily Cost',widthFrac:0.10},
+  ];
+  const pageLabel=totalPages>1?` — Page ${pageNumber} of ${totalPages}`:'';
+  return buildTablePageSVG(exportTheme,'Sourcing Plan',`Least-landed-cost assignment with source capacity and full-trailer economics${pageLabel}`,columns,pageRows);
 }
 
 function svgToPngDownload(svgStr, filename, bgColor){
@@ -3430,8 +3543,8 @@ function downloadBytes(bytes,filename,mimeType){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
-// Exports exactly two deliverables: a presentation-ready PNG containing the map and legend,
-// followed by a paginated PDF containing every optimized hub-detail row.
+// Exports three deliverables: a clean presentation PNG without staging hubs, an operational
+// placement/risk PDF, and a separate sourcing-plan PDF.
 async function exportPresentationMap(){
   if(!lastComputed){ alert('View Optimization Results first.'); return; }
   const themeSel = document.getElementById('exportThemeSelect');
@@ -3442,21 +3555,36 @@ async function exportPresentationMap(){
   const ok1 = await svgToPngDownload(buildPresentationSVG(exportTheme), `h2_network_map_${exportTheme}_${dateStr}.png`, bg);
   if(!ok1){ alert('Could not render the presentation map image. Your browser may be blocking SVG-to-canvas conversion for this file — try again, or right-click the on-screen map and save it directly as a fallback.'); return; }
 
-  if(lastComputed.hubs && lastComputed.hubs.length>0){
-    await new Promise(r=>setTimeout(r,350));
-    try{
-      const hubsPerPage=18;
-      const pageCount=Math.ceil(lastComputed.hubs.length/hubsPerPage);
-      const jpegPages=[];
-      for(let page=0;page<pageCount;page++){
-        const pageHubs=lastComputed.hubs.slice(page*hubsPerPage,(page+1)*hubsPerPage);
-        jpegPages.push(await svgToJpegBytes(buildHubDetailPageSVG(exportTheme,pageHubs,page+1,pageCount),bg));
-      }
-      const pdf=buildPdfFromJpegs(jpegPages);
-      downloadBytes(pdf,`h2_network_hub_details_${exportTheme}_${dateStr}.pdf`,'application/pdf');
-    } catch(error){
-      alert(`The map PNG was exported, but the hub-detail PDF could not be created: ${error.message}`);
+  await new Promise(r=>setTimeout(r,350));
+  try{
+    const perPage=18, operationalPages=[];
+    const hubs=lastComputed.hubs||[], hubPageCount=Math.max(1,Math.ceil(hubs.length/perPage));
+    for(let page=0;page<hubPageCount;page++){
+      operationalPages.push(await svgToJpegBytes(buildHubDetailPageSVG(exportTheme,hubs.slice(page*perPage,(page+1)*perPage),page+1,hubPageCount),bg));
     }
+    const units=lastComputed.hycasUnits||[], unitPageCount=Math.max(1,Math.ceil(units.length/perPage));
+    for(let page=0;page<unitPageCount;page++){
+      operationalPages.push(await svgToJpegBytes(buildHycasDetailPageSVG(exportTheme,units.slice(page*perPage,(page+1)*perPage),page+1,unitPageCount),bg));
+    }
+    const riskNodes=[...S.demand].sort((a,b)=>{
+      const rank={High:2,Med:1,Low:0};
+      return rank[lastComputed.risk[b.id].tier]-rank[lastComputed.risk[a.id].tier]||naturalCompare(a.name,b.name);
+    });
+    const riskPageCount=Math.max(1,Math.ceil(riskNodes.length/perPage));
+    for(let page=0;page<riskPageCount;page++){
+      operationalPages.push(await svgToJpegBytes(buildRiskPageSVG(exportTheme,riskNodes.slice(page*perPage,(page+1)*perPage),page+1,riskPageCount),bg));
+    }
+    downloadBytes(buildPdfFromJpegs(operationalPages),`h2_network_asset_placement_and_risk_${exportTheme}_${dateStr}.pdf`,'application/pdf');
+
+    await new Promise(r=>setTimeout(r,350));
+    const allSourcingRows=sourcingExportRows(), sourcingPages=[];
+    const sourcingPageCount=Math.max(1,Math.ceil(allSourcingRows.length/perPage));
+    for(let page=0;page<sourcingPageCount;page++){
+      sourcingPages.push(await svgToJpegBytes(buildSourcingPageSVG(exportTheme,allSourcingRows.slice(page*perPage,(page+1)*perPage),page+1,sourcingPageCount),bg));
+    }
+    downloadBytes(buildPdfFromJpegs(sourcingPages),`h2_network_sourcing_plan_${exportTheme}_${dateStr}.pdf`,'application/pdf');
+  } catch(error){
+    alert(`The map PNG was exported, but one or more PDF reports could not be created: ${error.message}`);
   }
 }
 
@@ -3601,6 +3729,29 @@ function attachHandlers(){
   if(btnSupplyImport) btnSupplyImport.addEventListener('click', ()=>document.getElementById('supplyCsvFile').click());
   const supplyCsvFile = document.getElementById('supplyCsvFile');
   if(supplyCsvFile) supplyCsvFile.addEventListener('change', (e)=>{ if(e.target.files[0]) importSupplyCSV(e.target.files[0]); e.target.value=''; });
+
+  const masterDropzone=document.getElementById('masterImportDropzone');
+  const masterFiles=document.getElementById('masterImportFiles');
+  const btnMasterImport=document.getElementById('btnMasterImport');
+  if(masterDropzone&&masterFiles){
+    const choose=()=>masterFiles.click();
+    masterDropzone.addEventListener('click',choose);
+    masterDropzone.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}});
+    masterDropzone.addEventListener('dragover',e=>{e.preventDefault();masterDropzone.classList.add('dragover');});
+    masterDropzone.addEventListener('dragleave',()=>masterDropzone.classList.remove('dragover'));
+    masterDropzone.addEventListener('drop',e=>{
+      e.preventDefault();masterDropzone.classList.remove('dragover');
+      if(e.dataTransfer.files.length) importMasterFiles([...e.dataTransfer.files]);
+    });
+    masterFiles.addEventListener('change',e=>{if(e.target.files.length) importMasterFiles([...e.target.files]);e.target.value='';});
+  }
+  if(btnMasterImport) btnMasterImport.addEventListener('click',e=>{e.stopPropagation();masterFiles.click();});
+  const btnDemandTemplateMaster=document.getElementById('btnDemandTemplateMaster');
+  if(btnDemandTemplateMaster) btnDemandTemplateMaster.addEventListener('click',()=>downloadTemplate('demand'));
+  const btnSupplyTemplateMaster=document.getElementById('btnSupplyTemplateMaster');
+  if(btnSupplyTemplateMaster) btnSupplyTemplateMaster.addEventListener('click',()=>downloadTemplate('supply'));
+  const btnPricingTemplateMaster=document.getElementById('btnPricingTemplateMaster');
+  if(btnPricingTemplateMaster) btnPricingTemplateMaster.addEventListener('click',downloadDiscountTemplate);
 
   const btnSaveParams = document.getElementById('btnSaveParams');
   if(btnSaveParams) btnSaveParams.addEventListener('click', ()=>{
@@ -3860,7 +4011,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000}, activeTab:'demand', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
+    S = { demand:[], supply:[], params:{trailerCap:750,costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
     lastScenario = null;
     render();
   }
