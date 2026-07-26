@@ -39,6 +39,7 @@
 // ---------------------------------------------------------------------------------------------
 
 const ORS_MATRIX_URL = 'https://api.openrouteservice.org/v2/matrix/driving-hgv';
+const OSRM_TABLE_URL = process.env.OSRM_TABLE_URL || 'https://router.project-osrm.org/table/v1/driving';
 const MAX_ELEMENTS_PER_REQUEST = 3000; // stay a bit under ORS's 3,500 cap for safety margin
 
 const text = (statusCode, body) => ({
@@ -46,6 +47,42 @@ const text = (statusCode, body) => ({
   headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' },
   body,
 });
+
+// Automatic road-network fallback when the ORS Matrix allowance is temporarily exhausted.
+// OSRM's table service reports road distance in meters and duration in seconds. Requests are
+// split so each contains at most 100 total coordinates, the public server's normal limit.
+async function fetchOsrmMatrix(origins, destinations) {
+  const distanceRows = origins.map(() => Array(destinations.length).fill(null));
+  const durationRows = origins.map(() => Array(destinations.length).fill(null));
+  const maxOriginsPerChunk = 50;
+
+  for (let os = 0; os < origins.length; os += maxOriginsPerChunk) {
+    const originChunk = origins.slice(os, os + maxOriginsPerChunk);
+    const maxDestinationsPerChunk = Math.max(1, 100 - originChunk.length);
+    for (let ds = 0; ds < destinations.length; ds += maxDestinationsPerChunk) {
+      const destinationChunk = destinations.slice(ds, ds + maxDestinationsPerChunk);
+      const coordinates = [...originChunk, ...destinationChunk];
+      const coordinatePath = coordinates.map(pair => `${pair[0]},${pair[1]}`).join(';');
+      const sources = originChunk.map((_, i) => i).join(';');
+      const destinationIndexes = destinationChunk.map((_, i) => originChunk.length + i).join(';');
+      const url = `${OSRM_TABLE_URL}/${coordinatePath}?annotations=distance,duration&sources=${sources}&destinations=${destinationIndexes}`;
+      const res = await fetch(url, { headers: { 'User-Agent': 'HyWeave/1.0' } });
+      if (!res.ok) throw new Error(`OSRM fallback rejected the request (${res.status}): ${await res.text()}`);
+      const data = await res.json();
+      if (data.code !== 'Ok') throw new Error(`OSRM fallback failed: ${data.message || data.code}`);
+
+      originChunk.forEach((_, oi) => {
+        destinationChunk.forEach((_, di) => {
+          const meters = data.distances && data.distances[oi] ? data.distances[oi][di] : null;
+          const seconds = data.durations && data.durations[oi] ? data.durations[oi][di] : null;
+          distanceRows[os + oi][ds + di] = meters == null ? null : meters / 1609.344;
+          durationRows[os + oi][ds + di] = seconds == null ? null : seconds / 3600;
+        });
+      });
+    }
+  }
+  return { distancesMiles: distanceRows, durationsHours: durationRows, provider: 'OSRM fallback' };
+}
 
 exports.handler = async function (event) {
   if (event.httpMethod !== 'POST') {
@@ -116,8 +153,20 @@ exports.handler = async function (event) {
 
       if (!resp.ok) {
         const errText = await resp.text();
-        if (resp.status === 403 || resp.status === 429) {
-          return text(429, `OpenRouteService quota likely exceeded: ${errText}`);
+        if (resp.status === 403 || resp.status === 429 || resp.status >= 500) {
+          try {
+            const fallback = await fetchOsrmMatrix(origins, destinations);
+            return {
+              statusCode: 200,
+              headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                'Cache-Control': 'public, max-age=3600',
+              },
+              body: JSON.stringify(fallback),
+            };
+          } catch (fallbackError) {
+            return text(502, `OpenRouteService unavailable (${errText}); ${fallbackError.message}`);
+          }
         }
         return text(502, `Routing provider rejected the request: ${errText}`);
       }
@@ -136,7 +185,11 @@ exports.handler = async function (event) {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'public, max-age=3600',
       },
-      body: JSON.stringify({ distancesMiles: distanceRows, durationsHours: durationRows.map(row => row.map(s => s / 3600)) }),
+      body: JSON.stringify({
+        distancesMiles: distanceRows,
+        durationsHours: durationRows.map(row => row.map(s => s / 3600)),
+        provider: 'OpenRouteService HGV',
+      }),
     };
   } catch (err) {
     return text(500, `Routing request failed: ${err.message}`);

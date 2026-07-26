@@ -705,6 +705,7 @@ let roadDistanceCache = new Map();
 let roadDistanceStatus = 'unconfigured'; // 'unconfigured' | 'idle' | 'loading' | 'ready' | 'error'
 let roadDistanceError = '';
 let roadDistanceLastSignature = null;
+let roadDistanceProvider = '';
 
 function networkSignature(){
   const d = S.demand.map(n=>`${n.id}:${n.lat.toFixed(5)},${n.lon.toFixed(5)}`).join(';');
@@ -755,6 +756,7 @@ async function refreshRoadDistances(){
       throw new Error(errText || `Request failed (${resp.status})`);
     }
     const data = await resp.json();
+    roadDistanceProvider = data.provider || 'Road routing';
     roadDistanceCache = new Map();
     S.demand.forEach((n,i)=>{
       supply.forEach((s,j)=>{
@@ -802,6 +804,7 @@ let placementRoadCache = new Map(); // key: "originLat,originLon|nodeId" -> {dis
 let placementRoadStatus = 'unconfigured';
 let placementRoadError = '';
 let placementRoadLastSignature = null;
+let placementRoadProvider = '';
 let hycasRoadSearchFloor = 1;
 let hycasRoadSearchSignature = '';
 
@@ -861,6 +864,7 @@ async function refreshPlacementRoadDistances(locations){
       throw new Error(errText || `Request failed (${resp.status})`);
     }
     const data = await resp.json();
+    placementRoadProvider = data.provider || 'Road routing';
     // Response is one row per ORIGIN (each placement location), against the FULL flattened
     // destination list (each location's own covered nodes, concatenated in order) — so each
     // location's columns are a known, contiguous range we can track with a running offset.
@@ -1977,7 +1981,7 @@ let lastComputed = null;
 // Shared status badge for hub/HyCAS/Asset Placement reach figures — same states as the Sourcing
 // Plan's road-distance badge, since it's the same underlying cache.
 function placementReachBadge(){
-  if(placementRoadStatus==='ready') return '<span class="tag tag-low">\u2713 Real road reach (OpenRouteService)</span>';
+  if(placementRoadStatus==='ready') return `<span class="tag tag-low">\u2713 Real road reach (${esc(placementRoadProvider||'routing provider')})</span>`;
   if(placementRoadStatus==='loading') return '<span class="tag tag-med">Fetching real road reach\u2026 large networks may take 20\u201325 seconds</span>';
   if(placementRoadStatus==='error') return `<span class="tag tag-high" title="${esc(placementRoadError)}">\u26a0 Real routing failed \u2014 showing straight-line</span> <a href="#" class="lnkRetryPlacementRoad" style="font-size:11px;color:var(--blue);margin-left:6px">Retry</a>`;
   return '<span class="tag tag-med">Straight-line reach (real routing not configured)</span>';
@@ -2128,7 +2132,7 @@ function renderResultsTab(){
   <div class="card">
     <div class="flexbetween">
       <h2 style="margin-bottom:0">Sourcing Plan</h2>
-      ${roadDistanceStatus==='ready'?'<span class="tag tag-low">\u2713 Real road distances (OpenRouteService)</span>'
+      ${roadDistanceStatus==='ready'?`<span class="tag tag-low">\u2713 Real road distances (${esc(roadDistanceProvider||'routing provider')})</span>`
         :roadDistanceStatus==='loading'?'<span class="tag tag-med">Fetching real road distances\u2026</span>'
         :roadDistanceStatus==='error'?'<span class="tag tag-high" title="'+esc(roadDistanceError)+'">\u26a0 Real routing failed \u2014 showing straight-line</span> <a href="#" id="lnkRetryRoadDistance" style="font-size:11px;color:var(--blue);margin-left:6px">Retry</a>'
         :'<span class="tag tag-med">Straight-line distance (real routing not configured)</span>'}
