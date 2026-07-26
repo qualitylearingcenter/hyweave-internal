@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HyWeave build: 2026-07-26-central-inputs-split-reports-1 -->
+<!-- HyWeave build: 2026-07-26-calculation-ready-banner-1 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -118,6 +118,12 @@
   .scenario-banner{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;border-color:var(--scenario-border);background:var(--scenario-bg);color:var(--scenario-text);}
   .scenario-banner b{color:var(--scenario-text);}
   .scenario-banner .scenario-accent{color:var(--scenario-accent);font-weight:650;}
+  .calculation-banner{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:12.5px;font-weight:650;}
+  .calculation-banner.ready{background:var(--status-ok-bg);border:1px solid var(--status-ok-border);color:var(--status-ok-text);}
+  .calculation-banner.working{background:var(--status-warn-bg);border:1px solid var(--status-warn-border);color:var(--status-warn-text);}
+  .calculation-banner .state{font-size:14px;font-weight:850;letter-spacing:.35px;white-space:nowrap;}
+  .calculation-banner.ready .state{color:var(--status-ok-accent);}
+  .calculation-banner.working .state{color:var(--status-warn-accent);}
   .import-dropzone{border:2px dashed var(--drop-border);background:var(--drop-bg);border-radius:10px;padding:24px;text-align:center;cursor:pointer;transition:.15s;}
   .import-dropzone.dragover{border-color:var(--blue);transform:translateY(-1px);box-shadow:0 5px 16px var(--shadow);}
   .import-dropzone h3{margin:0 0 6px;color:var(--heading);font-size:15px;}
@@ -2331,6 +2337,25 @@ function placementReachBadge(){
   return '<span class="tag tag-med">Straight-line reach (real routing not configured)</span>';
 }
 
+function calculationReadinessBanner(){
+  const running=[];
+  if(roadDistanceStatus==='loading') running.push('supply routing');
+  if(placementRoadStatus==='loading') running.push('placement routing');
+  if(townCenterPending.size>0) running.push('town-center placement');
+  if(running.length){
+    return `<div class="calculation-banner working" role="status" aria-live="polite">
+      <span class="state">◷ CALCULATING</span>
+      <span>Finishing ${esc(running.join(', '))}. Results will refresh automatically.</span>
+    </div>`;
+  }
+  const fallback = roadDistanceStatus==='error' || placementRoadStatus==='error' ||
+    roadDistanceStatus==='unconfigured' || placementRoadStatus==='unconfigured';
+  return `<div class="calculation-banner ready" role="status" aria-live="polite">
+    <span class="state">✓ READY</span>
+    <span>Optimization calculations are complete${fallback?' using the available routing data and configured fallbacks':''}.</span>
+  </div>`;
+}
+
 function renderResultsTab(){
   if(S.demand.length===0 || S.supply.length===0){
     return `<div class="card"><div class="empty">Add at least one demand node and one supply source to see optimization results.</div></div>`;
@@ -2350,6 +2375,7 @@ function renderResultsTab(){
   const futureCount = S.supply.filter(s=>(s.status||'current')==='future').length;
 
   return `
+  ${calculationReadinessBanner()}
   ${futureCount>0?`
   <div class="card scenario-banner">
     <div style="font-size:12.5px">
@@ -3152,7 +3178,7 @@ function buildPresentationSVG(exportTheme){
 
   // header
   svg += `<text x="36" y="52" font-size="30" font-weight="700" fill="${NAVY}">HyWeave — Network Map</text>`;
-  svg += `<text x="36" y="80" font-size="14" fill="${MUTED}">Sourcing assignments, network risk, and Mobile HyCAS coverage</text>`;
+  svg += `<text x="36" y="80" font-size="14" fill="${MUTED}">Sourcing assignments &amp; recommended resiliency staging hubs — Target Delivery Radius: ${fmt(S.params.targetRadius,0)} mi</text>`;
   svg += `<rect x="36" y="90" width="120" height="4" fill="#0071CE"/>`;
   svg += `<line x1="36" y1="100" x2="${VBW-36}" y2="100" stroke="${BORDER}" stroke-width="1"/>`;
 
@@ -3186,9 +3212,20 @@ function buildPresentationSVG(exportTheme){
     svg += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#8FA3BF" stroke-width="${w.toFixed(2)}" opacity="0.5"/>`;
   });
 
-  // Staging hubs are intentionally omitted from the PNG. Their full placement detail lives in
-  // the companion operational PDF, keeping the presentation map focused and uncluttered.
+  // Show staging-hub coverage and locations on the map. The verbose hub table is intentionally
+  // omitted from the right-side panel because it is supplied in the companion operational PDF.
   const kmPerMile = 1.60934;
+  const deliveryRadiusPx = S.params.targetRadius * kmPerMile * mp.scale;
+  if(S.showTrailerRadius){
+    hubs.forEach(h=>{
+      const [x,y] = toMap(h.lat,h.lon);
+      svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${deliveryRadiusPx.toFixed(1)}" fill="#F2A900" fill-opacity="0.06" stroke="#F2A900" stroke-width="1.6" opacity="0.8"/>`;
+    });
+  }
+  hubs.forEach(h=>{
+    const [x,y] = toMap(h.lat,h.lon);
+    svg += `<g transform="translate(${x.toFixed(1)},${y.toFixed(1)}) rotate(45)"><rect x="-8" y="-8" width="16" height="16" fill="#F2A900" stroke="#fff" stroke-width="1.8"/></g>`;
+  });
 
   // Mobile HyCAS response circles + triangle markers
   const hycasRadiusPx = S.params.hycasRadius * kmPerMile * mp.scale;
@@ -3234,7 +3271,7 @@ function buildPresentationSVG(exportTheme){
   const hasFuture = S.supply.some(s=>(s.status||'current')==='future');
   const legendItems = [
     ['#C81E33','circle','High risk node'], ['#B57500','circle','Medium risk node'], ['#177A4C','circle','Low risk node'],
-    ['#0071CE','square','Current supply source'],
+    ['#0071CE','square','Current supply source'], ['#F2A900','diamond','Proposed staging hub'],
   ];
   legendItems.forEach(([color,shape,label])=>{
     const cx=sbX+26, cy=sy-4;
@@ -3248,6 +3285,11 @@ function buildPresentationSVG(exportTheme){
     const cx=sbX+26, cy=sy-4;
     svg += `<rect x="${cx-6}" y="${cy-6}" width="12" height="12" fill="${S.params.includeFuture?'#5B9BD9':PAL.MAPFILL}" stroke="#0071CE" stroke-width="1.3" stroke-dasharray="2,1.5" opacity="${S.params.includeFuture?1:0.55}"/>`;
     svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Future supply source ${S.params.includeFuture?'(included)':'(excluded)'}</text>`;
+    sy += 26;
+  }
+  if(S.showTrailerRadius){
+    svg += `<circle cx="${sbX+26}" cy="${sy-4}" r="7" fill="#F2A900" fill-opacity="0.08" stroke="#F2A900" stroke-width="1.3"/>`;
+    svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Delivery radius (${fmt(S.params.targetRadius,0)} mi)</text>`;
     sy += 26;
   }
   svg += `<polygon points="${sbX+26},${sy-11} ${sbX+34},${sy+3} ${sbX+18},${sy+3}" fill="#7A5195" stroke="#fff" stroke-width="1.2"/>`;
@@ -3270,9 +3312,12 @@ function buildPresentationSVG(exportTheme){
     ...(futureCount>0 ? [[`Scenario`, S.params.includeFuture?`Current + Future`:`Current only`]] : []),
     ...(futureCount>0 ? [[`Active sources`, `${activeSupplyCount} of ${S.supply.length}`]] : []),
     [`Total daily demand`, `${fmt(kpi.totalDemand)} ${S.params.unit}/day`],
+    [`One-time staging cost`, `${money(kpi.totalStagingCost,0)}`],
     [`Avg landed cost`, `${money(kpi.avgCost)}/${S.params.unit}`],
     [`Trailer trips/day`, `${kpi.totalDailyTrips}`],
     [`High-risk nodes`, `${kpi.highRisk} of ${S.demand.length}`],
+    [`Staging hubs`, `${hubs.length}`],
+    [`Staged trailers`, `${kpi.totalTrailers}`],
     [`Mobile HyCAS units`, `${(hycasUnits||[]).length}`],
   ];
   summaryLines.forEach(([label,val])=>{
@@ -3543,8 +3588,8 @@ function downloadBytes(bytes,filename,mimeType){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
-// Exports three deliverables: a clean presentation PNG without staging hubs, an operational
-// placement/risk PDF, and a separate sourcing-plan PDF.
+// Exports three deliverables: a presentation PNG with hub coverage but without the verbose
+// right-side hub table, an operational placement/risk PDF, and a separate sourcing-plan PDF.
 async function exportPresentationMap(){
   if(!lastComputed){ alert('View Optimization Results first.'); return; }
   const themeSel = document.getElementById('exportThemeSelect');
