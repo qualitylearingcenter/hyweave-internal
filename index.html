@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HyWeave build: 2026-07-26-secure-routing-email-1 -->
+<!-- HyWeave build: 2026-07-26-exact-hub-pdf-export-1 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -18,6 +18,8 @@
     --legend-bg:rgba(255,255,255,.95); --shadow:rgba(0,0,0,.06);
     --map-bg:#F7F9FB; --btn-outline-bg:#FFFFFF; --btn-outline-hover:#F0F3F7;
     --danger-bg:#fdecec; --dropdown-hover:#F0F6FC;
+    --status-ok-bg:#F3FBF7; --status-ok-border:#CDE9DC; --status-ok-text:#29463A; --status-ok-accent:#177A4C;
+    --status-warn-bg:#FFFBF0; --status-warn-border:#E6C978; --status-warn-text:#4A3A18; --status-warn-accent:#8A5400;
   }
   [data-theme="dark"]{
     --headerbg:#050A12; --headertext:#FFFFFF; --heading:#EDF1F7;
@@ -32,6 +34,8 @@
     --legend-bg:rgba(23,31,43,.92); --shadow:rgba(0,0,0,.45);
     --map-bg:#121A24; --btn-outline-bg:#171F2B; --btn-outline-hover:#232E3D;
     --danger-bg:#3A1B22; --dropdown-hover:#232E3D;
+    --status-ok-bg:#142D22; --status-ok-border:#286447; --status-ok-text:#DDF5E8; --status-ok-accent:#5FCF9B;
+    --status-warn-bg:#302713; --status-warn-border:#806426; --status-warn-text:#F6E9C3; --status-warn-accent:#F2C46D;
   }
   *{box-sizing:border-box;}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);transition:background .15s,color .15s;}
@@ -103,6 +107,10 @@
   .empty{text-align:center;padding:40px 20px;color:var(--grey);font-size:12.5px;}
   .subhead{font-size:11px;font-weight:700;color:var(--grey);text-transform:uppercase;letter-spacing:.4px;margin:18px 0 8px;}
   .note{font-size:11px;color:var(--grey);background:var(--note-bg);border-radius:6px;padding:8px 10px;margin-top:10px;line-height:1.5;}
+  .status-card{color:var(--status-warn-text);background:var(--status-warn-bg);border-color:var(--status-warn-border);}
+  .status-card.status-ok{color:var(--status-ok-text);background:var(--status-ok-bg);border-color:var(--status-ok-border);}
+  .status-card .status-title{color:var(--status-warn-accent);}
+  .status-card.status-ok .status-title{color:var(--status-ok-accent);}
   .flexbetween{display:flex;justify-content:space-between;align-items:center;}
   .searchwrap{position:relative;}
   .acdropdown{position:absolute;top:100%;left:0;right:0;background:var(--panel);border:1px solid var(--border);border-radius:6px;box-shadow:0 6px 18px var(--shadow);max-height:190px;overflow:auto;z-index:30;margin-top:2px;}
@@ -1388,33 +1396,147 @@ function buildHubsForK(baseRisk, k){
   }).filter(Boolean);
 }
 
-function computeAutoHubs(baseRisk){
-  if(S.demand.length===0) return {hubs:[], k:0, achievedMaxDist:0, achievedMaxHours:0, metTarget:true, searchCapped:false};
-  const cap = Math.min(S.demand.length, 40);
-  let last = null;
-  for(let k=1; k<=cap; k++){
-    const hubs = buildHubsForK(baseRisk, k);
-    const achievedMaxDist = hubs.length? Math.max(...hubs.map(h=>h.maxDist)) : 0;
-    const achievedMaxHours = hubs.length? Math.max(...hubs.map(h=>h.maxHours)) : 0;
-    // both levers must be satisfied: distance AND time to reach the farthest covered node
-    const metTarget = achievedMaxDist<=S.params.targetRadius && achievedMaxHours<=S.params.targetHours;
-    last = {hubs, k, achievedMaxDist, achievedMaxHours, metTarget, searchCapped:false};
-    if(metTarget) break;
+function buildHubsFromSelectedSites(selectedSites){
+  const assignments=S.demand.map(n=>{
+    let best=0,bestScore=Infinity;
+    selectedSites.forEach((site,i)=>{
+      const reach=placementReachDistance(site.lat,site.lon,n);
+      const score=Math.max(reach.dist/S.params.targetRadius,reach.hours/S.params.targetHours);
+      if(score<bestScore){bestScore=score;best=i;}
+    });
+    return best;
+  });
+  return selectedSites.map((site,ci)=>{
+    const covered=S.demand.filter((_,i)=>assignments[i]===ci);
+    if(!covered.length) return null;
+    const cLat=site.lat,cLon=site.lon;
+    const nearest=nearestExistingFacility(cLat,cLon);
+    const cityRef=site.city
+      ? {name:site.city,state:site.state||'',dist:0}
+      : nearestCityRef(cLat,cLon);
+    const coveredDemand=covered.reduce((sum,n)=>sum+n.rate,0);
+    const dists=covered.map(n=>haversineMiles(n.lat,n.lon,cLat,cLon));
+    const avgDist=dists.reduce((a,b)=>a+b,0)/dists.length;
+    const maxDist=Math.max(...dists);
+    const avgSafety=covered.reduce((a,n)=>a+n.safetyDays,0)/covered.length;
+    const trailers=Math.ceil((coveredDemand*avgSafety)/S.params.trailerCap)||0;
+    let stagingSource=null,stagingSourceDist=Infinity,costPerTrailer=0;
+    activeSupply().forEach(s=>{
+      const d=haversineMiles(cLat,cLon,s.lat,s.lon);
+      const cost=S.params.trailerCap*s.cost+S.params.costPerMile*d;
+      if(stagingSource===null||cost<costPerTrailer){
+        stagingSource=s;stagingSourceDist=d;costPerTrailer=cost;
+      }
+    });
+    return {
+      idx:ci+1,lat:cLat,lon:cLon,centroidLat:cLat,centroidLon:cLon,
+      townResolved:true,townOffsetMiles:0,cityRef,
+      nearestFacility:nearest.facility,nearestFacilityDist:nearest.dist,
+      covered,coveredDemand,avgDist,maxDist,trailers,
+      avgHours:avgDist/S.params.avgSpeed,maxHours:maxDist/S.params.avgSpeed,
+      stagingSource,stagingSourceDist,costPerTrailer,stagingCost:trailers*costPerTrailer,
+      candidateType:site.type,candidateId:site.id,
+    };
+  }).filter(Boolean);
+}
+
+// Exact minimum set-cover model over real candidate facilities. Every active demand or supply
+// facility is a permissible hub site. The objective is the fewest hubs; a candidate covers a
+// demand node only when both configured distance and time guardrails are satisfied.
+function solveExactHubCover(){
+  const rawCandidates=placementFacilityCandidates();
+  const seen=new Set();
+  const candidates=rawCandidates.filter(c=>{
+    const key=`${c.lat.toFixed(5)},${c.lon.toFixed(5)}`;
+    if(seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  const n=S.demand.length;
+  const universe=(1n<<BigInt(n))-1n;
+  const entries=candidates.map((site,index)=>{
+    let mask=0n;
+    S.demand.forEach((node,i)=>{
+      const reach=placementReachDistance(site.lat,site.lon,node);
+      if(reach.dist<=S.params.targetRadius&&reach.hours<=S.params.targetHours) mask|=1n<<BigInt(i);
+    });
+    return {site,index,mask};
+  }).filter(e=>e.mask!==0n);
+
+  // Remove duplicate coverage masks, keeping the site with the lowest aggregate reach.
+  const byMask=new Map();
+  entries.forEach(e=>{
+    const key=e.mask.toString();
+    const score=S.demand.reduce((sum,node,i)=>
+      (e.mask&(1n<<BigInt(i)))?sum+haversineMiles(e.site.lat,e.site.lon,node.lat,node.lon):sum,0);
+    if(!byMask.has(key)||score<byMask.get(key).score) byMask.set(key,{...e,score});
+  });
+  const options=[...byMask.values()];
+  const coversNode=Array.from({length:n},()=>[]);
+  options.forEach((option,oi)=>{
+    for(let i=0;i<n;i++) if(option.mask&(1n<<BigInt(i))) coversNode[i].push(oi);
+  });
+  if(coversNode.some(list=>list.length===0)) return {selected:[],optimal:false};
+
+  // Greedy solution supplies a tight initial upper bound for branch-and-bound.
+  let greedyCovered=0n;
+  const greedy=[];
+  while(greedyCovered!==universe){
+    let best=-1,bestGain=-1;
+    options.forEach((option,oi)=>{
+      const gain=popcountBigInt(option.mask&~greedyCovered);
+      if(gain>bestGain){bestGain=gain;best=oi;}
+    });
+    if(best<0||bestGain===0) break;
+    greedy.push(best);greedyCovered|=options[best].mask;
   }
-  if(!last.metTarget) last.searchCapped = true;
-  // The search above stays on fast straight-line distance regardless of what happens next — see
-  // applyPlacementReach's comment for why. This upgrades the REPORTED reach for whichever hubs
-  // were actually chosen to real road distance/time where available. Real roads are typically
-  // longer, so a configuration the straight-line search believed had satisfied its target can
-  // occasionally show as narrowly missing it once real routing is applied — that's a more honest
-  // number surfacing, not a bug, and metTarget below is re-checked against whichever figures are
-  // actually being displayed.
-  maybeRefreshTownCenters(last.hubs);
-  applyPlacementReach(last.hubs, h => ({lat:h.lat, lon:h.lon}));
-  last.achievedMaxDist = last.hubs.length? Math.max(...last.hubs.map(h=>h.maxDist)) : 0;
-  last.achievedMaxHours = last.hubs.length? Math.max(...last.hubs.map(h=>h.maxHours)) : 0;
-  last.metTarget = last.achievedMaxDist<=S.params.targetRadius && last.achievedMaxHours<=S.params.targetHours;
-  return last;
+  let bestSelection=[...greedy];
+  const memo=new Map();
+  function search(covered,selected){
+    if(covered===universe){
+      if(selected.length<bestSelection.length) bestSelection=[...selected];
+      return;
+    }
+    if(selected.length>=bestSelection.length) return;
+    const memoDepth=memo.get(covered);
+    if(memoDepth!==undefined&&memoDepth<=selected.length) return;
+    memo.set(covered,selected.length);
+    const uncovered=universe&~covered;
+    let maxGain=0;
+    options.forEach(o=>{maxGain=Math.max(maxGain,popcountBigInt(o.mask&uncovered));});
+    if(!maxGain||selected.length+Math.ceil(popcountBigInt(uncovered)/maxGain)>=bestSelection.length) return;
+
+    let chosenNode=-1,branches=null;
+    for(let i=0;i<n;i++){
+      if(!(uncovered&(1n<<BigInt(i)))) continue;
+      const viable=coversNode[i].filter(oi=>(options[oi].mask&uncovered)!==0n);
+      if(branches===null||viable.length<branches.length){chosenNode=i;branches=viable;}
+    }
+    branches.sort((a,b)=>popcountBigInt(options[b].mask&uncovered)-popcountBigInt(options[a].mask&uncovered));
+    branches.forEach(oi=>search(covered|options[oi].mask,[...selected,oi]));
+  }
+  search(0n,[]);
+  return {selected:bestSelection.map(i=>options[i].site),optimal:true};
+}
+
+function popcountBigInt(value){
+  let count=0;
+  while(value){value&=value-1n;count++;}
+  return count;
+}
+
+function computeAutoHubs(baseRisk){
+  if(S.demand.length===0) return {hubs:[],k:0,achievedMaxDist:0,achievedMaxHours:0,metTarget:true,searchCapped:false,optimal:true};
+  const solution=solveExactHubCover();
+  const hubs=buildHubsFromSelectedSites(solution.selected);
+  applyPlacementReach(hubs,h=>({lat:h.lat,lon:h.lon}));
+  const achievedMaxDist=hubs.length?Math.max(...hubs.map(h=>h.maxDist)):0;
+  const achievedMaxHours=hubs.length?Math.max(...hubs.map(h=>h.maxHours)):0;
+  return {
+    hubs,k:hubs.length,achievedMaxDist,achievedMaxHours,
+    metTarget:solution.optimal&&achievedMaxDist<=S.params.targetRadius&&achievedMaxHours<=S.params.targetHours,
+    searchCapped:false,optimal:solution.optimal,
+    optimizationMethod:'Exact minimum set cover over demand and active supply facility candidates',
+  };
 }
 
 /* ===================== MOBILE HyCAS PLACEMENT ===================== */
@@ -2158,11 +2280,11 @@ function renderResultsTab(){
     <div class="kpi"><div class="val">${hycasPlan.k}</div><div class="lbl">Mobile HyCAS Units</div></div>
   </div>
   ${kpi.unmetTotal>0?`<div class="card" style="border-color:#F3C6C6;background:#FEF6F6"><b style="color:var(--red)">⚠ Supply shortfall:</b> ${fmt(kpi.unmetTotal)} ${S.params.unit}/day of demand cannot be met by current supply source capacity. Consider adding capacity or new sources.</div>`:''}
-  <div class="card" style="border-color:${hubPlan.metTarget?'#CDE9DC':'#F3DDB0'};background:${hubPlan.metTarget?'#F3FBF7':'#FFFBF0'}">
-    <b style="color:${hubPlan.metTarget?'#177A4C':'#B57500'}">${hubPlan.metTarget?'✓':'⚠'} System-recommended hub count: ${hubPlan.k}</b>
+  <div class="card status-card ${hubPlan.metTarget?'status-ok':''}">
+    <b class="status-title">${hubPlan.metTarget?'✓':'⚠'} System-recommended hub count: ${hubPlan.k}</b>
     &nbsp;—&nbsp; ${hubPlan.metTarget
-      ? `every demand node is delivered within the ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h targets of its hub (worst case: ${fmt(hubPlan.achievedMaxDist,0)} mi, ${fmtHours(hubPlan.achievedMaxHours)}).`
-      : `search capped at ${hubPlan.k} hub(s) (limit = number of demand nodes, up to 40 searched); best achievable worst case is <b>${fmt(hubPlan.achievedMaxDist,0)} mi / ${fmtHours(hubPlan.achievedMaxHours)}</b>, still short of your ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h targets. Consider raising one or both targets, or splitting the network.`}
+      ? `exact minimum-cover solution over real demand and active-supply facility candidates; every demand node is within the ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails (worst case: ${fmt(hubPlan.achievedMaxDist,0)} mi, ${fmtHours(hubPlan.achievedMaxHours)}).`
+      : `the exact candidate-site model could not produce a routed plan inside both ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails with the currently available routing data. Current worst case is <b>${fmt(hubPlan.achievedMaxDist,0)} mi / ${fmtHours(hubPlan.achievedMaxHours)}</b>.`}
   </div>
 
   <div class="card">
@@ -2173,7 +2295,7 @@ function renderResultsTab(){
           <option value="light" ${THEME!=='dark'?'selected':''}>☀ Light export</option>
           <option value="dark" ${THEME==='dark'?'selected':''}>🌙 Dark export</option>
         </select>
-        <button class="btn btn-small btn-outline" id="btnExportMapImg">⬇ Export Presentation Map (16:9 PNG)</button>
+        <button class="btn btn-small btn-outline" id="btnExportMapImg">⬇ Export Map PNG + Hub Details PDF</button>
       </div>
     </div>
     <div class="toolbar">
@@ -3168,8 +3290,8 @@ function buildTablePageSVG(exportTheme, title, subtitle, columns, rows){
   return svg;
 }
 
-function buildHubDetailPageSVG(exportTheme){
-  const {hubs} = lastComputed;
+function buildHubDetailPageSVG(exportTheme, pageHubs=null, pageNumber=1, totalPages=1){
+  const hubs = pageHubs || lastComputed.hubs;
   const columns = [
     {label:'Hub', widthFrac:0.05},
     {label:'Proposed Location', widthFrac:0.19},
@@ -3192,7 +3314,8 @@ function buildHubDetailPageSVG(exportTheme){
     { main: h.stagingSource?h.stagingSource.name:'—', sub: h.stagingSource?`${fmt(h.stagingSourceDist,0)} mi away`:'' },
     money(h.stagingCost,0),
   ]);
-  return buildTablePageSVG(exportTheme, 'Resiliency Staging Hubs — Detail', `${hubs.length} hub(s) proposed to hit the ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h delivery target`, columns, rows);
+  const pageLabel=totalPages>1?` — Page ${pageNumber} of ${totalPages}`:'';
+  return buildTablePageSVG(exportTheme, 'Resiliency Staging Hubs — Detail', `${lastComputed.hubs.length} optimized hub(s) · ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails${pageLabel}`, columns, rows);
 }
 
 function buildHycasDetailPageSVG(exportTheme){
@@ -3244,9 +3367,71 @@ function svgToPngDownload(svgStr, filename, bgColor){
   });
 }
 
-// Exports a small deck: page 1 is the map (unchanged), page 2 lists every proposed staging hub's
-// full detail, and page 3 (if any HyCAS units exist) lists every HyCAS unit's detail — each a
-// separate 16:9 PNG so they drop into a slide deck as consecutive slides.
+function svgToJpegBytes(svgStr,bgColor){
+  return new Promise((resolve,reject)=>{
+    const url=URL.createObjectURL(new Blob([svgStr],{type:'image/svg+xml;charset=utf-8'}));
+    const img=new Image();
+    img.onload=()=>{
+      const canvas=document.createElement('canvas');
+      canvas.width=1920;canvas.height=1080;
+      const ctx=canvas.getContext('2d');
+      ctx.fillStyle=bgColor;ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(async blob=>{
+        if(!blob){reject(new Error('Could not render PDF page'));return;}
+        resolve(new Uint8Array(await blob.arrayBuffer()));
+      },'image/jpeg',0.94);
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Could not render PDF page'));};
+    img.src=url;
+  });
+}
+
+function buildPdfFromJpegs(jpegPages,widthPx=1920,heightPx=1080){
+  const encoder=new TextEncoder();
+  const chunks=[];let length=0;
+  const push=value=>{
+    const bytes=typeof value==='string'?encoder.encode(value):value;
+    chunks.push(bytes);length+=bytes.length;
+  };
+  const objectCount=2+jpegPages.length*3;
+  const offsets=Array(objectCount+1).fill(0);
+  push(new Uint8Array([0x25,0x50,0x44,0x46,0x2D,0x31,0x2E,0x34,0x0A,0x25,0xE2,0xE3,0xCF,0xD3,0x0A]));
+  const pageObjects=jpegPages.map((_,i)=>3+i*3);
+  function object(number,body){
+    offsets[number]=length;push(`${number} 0 obj\n`);push(body);push('\nendobj\n');
+  }
+  object(1,'<< /Type /Catalog /Pages 2 0 R >>');
+  object(2,`<< /Type /Pages /Count ${jpegPages.length} /Kids [${pageObjects.map(n=>`${n} 0 R`).join(' ')}] >>`);
+  const pageWidth=960,pageHeight=540;
+  jpegPages.forEach((jpeg,i)=>{
+    const pageObj=3+i*3,imageObj=pageObj+1,contentObj=pageObj+2;
+    object(pageObj,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im${i+1} ${imageObj} 0 R >> >> /Contents ${contentObj} 0 R >>`);
+    offsets[imageObj]=length;
+    push(`${imageObj} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${widthPx} /Height ${heightPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>\nstream\n`);
+    push(jpeg);push('\nendstream\nendobj\n');
+    const content=`q\n${pageWidth} 0 0 ${pageHeight} 0 0 cm\n/Im${i+1} Do\nQ\n`;
+    object(contentObj,`<< /Length ${encoder.encode(content).length} >>\nstream\n${content}endstream`);
+  });
+  const xrefOffset=length;
+  push(`xref\n0 ${objectCount+1}\n0000000000 65535 f \n`);
+  for(let i=1;i<=objectCount;i++) push(`${String(offsets[i]).padStart(10,'0')} 00000 n \n`);
+  push(`trailer\n<< /Size ${objectCount+1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+  const result=new Uint8Array(length);let position=0;
+  chunks.forEach(chunk=>{result.set(chunk,position);position+=chunk.length;});
+  return result;
+}
+
+function downloadBytes(bytes,filename,mimeType){
+  const url=URL.createObjectURL(new Blob([bytes],{type:mimeType}));
+  const a=document.createElement('a');
+  a.href=url;a.download=filename;a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+// Exports exactly two deliverables: a presentation-ready PNG containing the map and legend,
+// followed by a paginated PDF containing every optimized hub-detail row.
 async function exportPresentationMap(){
   if(!lastComputed){ alert('View Optimization Results first.'); return; }
   const themeSel = document.getElementById('exportThemeSelect');
@@ -3259,11 +3444,19 @@ async function exportPresentationMap(){
 
   if(lastComputed.hubs && lastComputed.hubs.length>0){
     await new Promise(r=>setTimeout(r,350));
-    await svgToPngDownload(buildHubDetailPageSVG(exportTheme), `h2_network_hubs_${exportTheme}_${dateStr}.png`, bg);
-  }
-  if(lastComputed.hycasUnits && lastComputed.hycasUnits.length>0){
-    await new Promise(r=>setTimeout(r,350));
-    await svgToPngDownload(buildHycasDetailPageSVG(exportTheme), `h2_network_hycas_${exportTheme}_${dateStr}.png`, bg);
+    try{
+      const hubsPerPage=18;
+      const pageCount=Math.ceil(lastComputed.hubs.length/hubsPerPage);
+      const jpegPages=[];
+      for(let page=0;page<pageCount;page++){
+        const pageHubs=lastComputed.hubs.slice(page*hubsPerPage,(page+1)*hubsPerPage);
+        jpegPages.push(await svgToJpegBytes(buildHubDetailPageSVG(exportTheme,pageHubs,page+1,pageCount),bg));
+      }
+      const pdf=buildPdfFromJpegs(jpegPages);
+      downloadBytes(pdf,`h2_network_hub_details_${exportTheme}_${dateStr}.pdf`,'application/pdf');
+    } catch(error){
+      alert(`The map PNG was exported, but the hub-detail PDF could not be created: ${error.message}`);
+    }
   }
 }
 
