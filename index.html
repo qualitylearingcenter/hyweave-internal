@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HyWeave build: 2026-07-26-claude-merge-repaired-1 -->
+<!-- HyWeave build: 2026-07-26-complete-direct-backup-1 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -1000,11 +1000,12 @@ if(PORTAL_MODE){
 }
 
 // Theme is intentionally NOT persisted (no localStorage) so this file behaves identically
-// whether it's opened inside Claude, downloaded, or hosted standalone — it just starts light
+// whether it's opened locally or hosted standalone — it starts dark
 // every time. THEME drives the map's own SVG colors (state fill/stroke/labels), which are baked
 // into generated markup at render time and can't follow CSS variables the way the rest of the
 // UI does, so changing it re-runs drawMap() to regenerate the map in the new palette.
-let THEME = 'light';
+let THEME = 'dark';
+document.documentElement.setAttribute('data-theme', THEME);
 function applyTheme(theme){
   THEME = theme;
   document.documentElement.setAttribute('data-theme', theme);
@@ -1049,33 +1050,54 @@ function computeSourcing(){
   S.demand.forEach(n=>{
     supply.forEach(s=>{
       const nd = nodeSourceDistance(n, s);
-      const transport = (S.params.costPerMile*nd.dist)/S.params.trailerCap;
-      const landed = s.cost + transport;
-      pairs.push({nodeId:n.id, sourceId:s.id, dist:nd.dist, hours:nd.hours, isReal:nd.isReal, landed});
+      pairs.push({
+        nodeId:n.id, sourceId:s.id, dist:nd.dist, hours:nd.hours,
+        isReal:nd.isReal, isOverride:nd.isOverride,
+      });
     });
   });
-  pairs.sort((a,b)=>a.landed-b.landed);
   const remDemand = {}; S.demand.forEach(n=>remDemand[n.id]=n.rate);
   const remCap = {}; supply.forEach(s=>remCap[s.id]=s.capacity);
   const flows = [];
-  for(const p of pairs){
-    if(remDemand[p.nodeId]<=1e-9) continue;
-    if(remCap[p.sourceId]<=1e-9) continue;
-    const amt = Math.min(remDemand[p.nodeId], remCap[p.sourceId]);
-    flows.push({...p, amt});
-    remDemand[p.nodeId]-=amt; remCap[p.sourceId]-=amt;
+
+  // Capacity-aware regret assignment using actual whole-trailer costs. This protects scarce
+  // nearby capacity for nodes that would otherwise suffer the largest cost penalty.
+  const pairByLane = new Map(pairs.map(p=>[p.nodeId+'|'+p.sourceId,p]));
+  const maxIterations = Math.max(1, S.demand.length*Math.max(1,supply.length)+10);
+  let iterations=0;
+  while(iterations++<maxIterations){
+    const candidates=[];
+    S.demand.forEach(n=>{
+      if(remDemand[n.id]<=1e-9) return;
+      const options=[];
+      supply.forEach(s=>{
+        if(remCap[s.id]<=1e-9) return;
+        const p=pairByLane.get(n.id+'|'+s.id);
+        if(!p) return;
+        const amt=Math.min(remDemand[n.id],remCap[s.id]);
+        const trips=Math.ceil(amt/S.params.trailerCap);
+        const transportCost=trips*S.params.costPerMile*p.dist;
+        const sourceCost=amt*s.cost;
+        const totalCost=sourceCost+transportCost;
+        options.push({...p,amt,trips,transportCost,sourceCost,totalCost,effectiveLanded:totalCost/amt});
+      });
+      if(!options.length) return;
+      options.sort((a,b)=>a.effectiveLanded-b.effectiveLanded || a.dist-b.dist);
+      const best=options[0];
+      const regret=options.length>1 ? options[1].effectiveLanded-best.effectiveLanded : Number.POSITIVE_INFINITY;
+      candidates.push({node:n,best,regret});
+    });
+    if(!candidates.length) break;
+    candidates.sort((a,b)=>{
+      if(a.regret===Infinity && b.regret!==Infinity) return -1;
+      if(b.regret===Infinity && a.regret!==Infinity) return 1;
+      return b.regret-a.regret || a.best.effectiveLanded-b.best.effectiveLanded || b.best.amt-a.best.amt;
+    });
+    const chosen=candidates[0].best;
+    flows.push(chosen);
+    remDemand[chosen.nodeId]-=chosen.amt;
+    remCap[chosen.sourceId]-=chosen.amt;
   }
-  // Trailers are always dispatched full: a day's volume on a given lane is rounded UP to whole
-  // trailer loads (you can't send half a trailer for half the trip cost), so actual transport
-  // cost per lane is trips x cost-per-mile x distance, not a continuous per-kg rate.
-  flows.forEach(f=>{
-    const src = supply.find(s=>s.id===f.sourceId);
-    f.trips = f.amt>1e-9 ? Math.ceil(f.amt/S.params.trailerCap) : 0;
-    f.transportCost = f.trips*S.params.costPerMile*f.dist;
-    f.sourceCost = f.amt*src.cost;
-    f.totalCost = f.sourceCost + f.transportCost;
-    f.effectiveLanded = f.amt>1e-9 ? f.totalCost/f.amt : f.landed;
-  });
   const nodeSummary = {};
   S.demand.forEach(n=>{
     const nf = flows.filter(f=>f.nodeId===n.id).sort((a,b)=>b.amt-a.amt);
@@ -1094,7 +1116,8 @@ function computeBaseRisk(sourcing){
   const supply = activeSupply();
   const raw = {};
   S.demand.forEach(n=>{
-    const primary = sourcing.nodeSummary[n.id].primary;
+    const summary = sourcing.nodeSummary[n.id];
+    const primary = summary.primary;
     let primaryDist, primaryHours;
     if(primary){
       primaryDist = primary.dist; primaryHours = primary.hours;
@@ -1105,10 +1128,31 @@ function computeBaseRisk(sourcing){
     } else {
       primaryDist = 0; primaryHours = 0;
     }
-    const unmet = sourcing.nodeSummary[n.id].unmet;
+    // Direct backup is evaluated independently from the normal cost assignment. A source must
+    // be able to cover the location's full daily demand and meet both original guardrails.
+    const directCandidates = supply
+      .filter(s=>s.capacity>=n.rate-1e-9)
+      .map(s=>{
+        const lane=nodeSourceDistance(n,s);
+        return {sourceId:s.id,dist:lane.dist,hours:lane.hours,
+          within:lane.dist<=S.params.targetRadius && lane.hours<=S.params.targetHours};
+      })
+      .sort((a,b)=>
+        (a.within===b.within?0:(a.within?-1:1)) ||
+        Math.max(a.dist/S.params.targetRadius,a.hours/S.params.targetHours)-
+        Math.max(b.dist/S.params.targetRadius,b.hours/S.params.targetHours)
+      );
+    const directReference=directCandidates.find(x=>x.within) || directCandidates[0] || null;
+    const unmet = summary.unmet;
     const penalty = 1.0 + (unmet>0?1.5:0);
     const score = n.rate * (primaryDist/100) * penalty;
-    raw[n.id] = { score, primaryDist, primaryHours, unmet, primarySourceId: primary?primary.sourceId:null };
+    raw[n.id] = {
+      score, primaryDist, primaryHours, unmet, primarySourceId:primary?primary.sourceId:null,
+      directWithinTarget:!!(directReference&&directReference.within),
+      directSourceId:directReference?directReference.sourceId:null,
+      directDist:directReference?directReference.dist:null,
+      directHours:directReference?directReference.hours:null,
+    };
   });
   return raw;
 }
@@ -1117,17 +1161,10 @@ function computeBaseRisk(sourcing){
 // node falls within the target delivery radius of the hub that's supposed to cover it — since
 // delivery-side resiliency matters more here than which supply source it happens to draw from.
 // Final risk tiers are ABSOLUTE, not relative to the rest of the network — a well-covered network
-// can and should show zero High-risk nodes. For each node we check TWO possible service paths:
-// (a) via its assigned staging hub, (b) direct from its primary supply source. If the hub route
-// alone would land the node in High risk but going direct from source would land it in Medium or
-// Low instead, we prefer the source route for tiering purposes — the node genuinely isn't at risk
-// just because its hub happens to be far away, if its source can reach it directly and well.
-//  - High: neither route gets it within the delivery radius/time target, OR there's an unmet-
-//          demand shortfall (a real capacity failure regardless of distance).
-//  - Med:  covered via whichever route qualifies, but using up most of its margin (>=75% of the
-//          target distance or time) — a disruption or re-routing could tip it over the line.
-//  - Low:  comfortably covered with room to spare.
-const RISK_MARGIN_THRESHOLD = 0.75;
+// can and should show zero High-risk nodes. Operational priority is:
+// (1) full trailers at the assigned staging hub, (2) capacity-qualified direct supply,
+// (3) another staged hub. Any path inside both original guardrails is Low risk (green).
+const RISK_MARGIN_THRESHOLD = 0.75; // retained for backward-compatible exports/tooltips
 function computeFinalRisk(baseRisk, hubs){
   const coverage = {};
   hubs.forEach(h=>{
@@ -1135,7 +1172,7 @@ function computeFinalRisk(baseRisk, hubs){
       const d = haversineMiles(n.lat,n.lon,h.lat,h.lon);
       const hrs = d/S.params.avgSpeed;
       coverage[n.id] = {
-        hubIdx:h.idx, dist:d, hours:hrs,
+        hubIdx:h.idx, dist:d, hours:hrs, trailers:h.trailers,
         withinDist: d<=S.params.targetRadius, withinHours: hrs<=S.params.targetHours,
       };
     });
@@ -1145,27 +1182,42 @@ function computeFinalRisk(baseRisk, hubs){
     const cov = coverage[n.id];
     const base = baseRisk[n.id];
     const hasShortfall = base.unmet>0;
-    const hubWithin = cov ? (cov.withinDist && cov.withinHours) : false;
+    const hubWithin = cov ? (cov.trailers>0 && cov.withinDist && cov.withinHours) : false;
     const primaryHours = base.primaryHours;
-    const sourceWithin = base.primaryDist<=S.params.targetRadius && primaryHours<=S.params.targetHours;
+    const sourceWithin = base.directWithinTarget;
+    const alternateHubs = hubs
+      .filter(h=>h.trailers>0 && (!cov || h.idx!==cov.hubIdx))
+      .map(h=>{
+        const dist=haversineMiles(n.lat,n.lon,h.lat,h.lon);
+        const hours=dist/S.params.avgSpeed;
+        return {hubIdx:h.idx,dist,hours,within:dist<=S.params.targetRadius && hours<=S.params.targetHours};
+      })
+      .filter(x=>x.within)
+      .sort((a,b)=>Math.max(a.dist/S.params.targetRadius,a.hours/S.params.targetHours)-
+                    Math.max(b.dist/S.params.targetRadius,b.hours/S.params.targetHours));
+    const alternate=alternateHubs[0]||null;
 
-    let servicedVia, tierDist, tierHours;
-    if(hubWithin){ servicedVia='hub'; tierDist=cov.dist; tierHours=cov.hours; }
-    else if(sourceWithin){ servicedVia='source'; tierDist=base.primaryDist; tierHours=primaryHours; }
-    else { servicedVia = cov?'hub':(base.primarySourceId?'source':'none'); tierDist = cov?cov.dist:base.primaryDist; tierHours = cov?cov.hours:primaryHours; }
-
-    let tier;
-    if(hasShortfall || (!hubWithin && !sourceWithin)){
-      tier = 'High';
+    let servicedVia, tierDist, tierHours, selectedHubIdx=null;
+    if(hubWithin){
+      servicedVia='hub'; tierDist=cov.dist; tierHours=cov.hours; selectedHubIdx=cov.hubIdx;
+    } else if(sourceWithin){
+      servicedVia='source'; tierDist=base.directDist; tierHours=base.directHours;
+    } else if(alternate){
+      servicedVia='alternateHub'; tierDist=alternate.dist; tierHours=alternate.hours; selectedHubIdx=alternate.hubIdx;
     } else {
-      const distMargin = tierDist / S.params.targetRadius;
-      const hoursMargin = tierHours / S.params.targetHours;
-      tier = Math.max(distMargin,hoursMargin) >= RISK_MARGIN_THRESHOLD ? 'Med' : 'Low';
+      servicedVia=cov?'hub':(base.primarySourceId?'source':'none');
+      tierDist=cov?cov.dist:base.primaryDist;
+      tierHours=cov?cov.hours:primaryHours;
+      selectedHubIdx=cov?cov.hubIdx:null;
     }
+
+    const selectedWithin=hubWithin||sourceWithin||!!alternate;
+    const tier=(hasShortfall||!selectedWithin)?'High':'Low';
     combined[n.id] = {
       ...base,
       hubIdx: cov?cov.hubIdx:null, hubDist: cov?cov.dist:null, hubHours: cov?cov.hours:null,
       withinDeliveryRadius: hubWithin, sourceWithinTarget: sourceWithin,
+      alternateHubWithinTarget:!!alternate, selectedHubIdx, selectedWithinTarget:selectedWithin,
       servicedVia, tierDist, tierHours, tier,
     };
   });
@@ -1179,7 +1231,8 @@ function riskReasons(r){
   if(r.unmet>0){
     reasons.push(`Unmet demand: ${fmt(r.unmet)} ${S.params.unit}/day cannot be sourced (supply capacity shortfall)`);
   }
-  const srcName = r.primarySourceId ? (S.supply.find(s=>s.id===r.primarySourceId)||{}).name : null;
+  const sourceId = r.directSourceId || r.primarySourceId;
+  const srcName = sourceId ? (S.supply.find(s=>s.id===sourceId)||{}).name : null;
   if(r.servicedVia==='none'){
     reasons.push('Not covered by any staging hub and no supply source available');
   } else if(r.tier==='High'){
@@ -2271,8 +2324,12 @@ function renderResultsTab(){
       const r = risk[n.id];
       const tagClass = r.tier==='High'?'tag-high':r.tier==='Med'?'tag-med':'tag-low';
       const primary = sourcing.nodeSummary[n.id].primary;
-      const srcName = primary? S.supply.find(s=>s.id===primary.sourceId).name : '—';
-      const viaLabel = r.servicedVia==='source' ? `Direct: ${esc(srcName)}` : (r.servicedVia==='hub' ? `Hub ${r.hubIdx}` : '—');
+      const displayedSourceId = r.servicedVia==='source' && r.directSourceId ? r.directSourceId : (primary?primary.sourceId:null);
+      const displayedSource = displayedSourceId ? S.supply.find(s=>s.id===displayedSourceId) : null;
+      const srcName = displayedSource ? displayedSource.name : '—';
+      const viaLabel = r.servicedVia==='source' ? `Direct: ${esc(srcName)}`
+        : (r.servicedVia==='alternateHub' ? `Alternate Hub ${r.selectedHubIdx}`
+        : (r.servicedVia==='hub' ? `Assigned Hub ${r.selectedHubIdx||r.hubIdx}` : '—'));
       const isWithin = r.tier!=='High';
       return `<tr>
         <td><b>${esc(n.name)}</b></td>
@@ -2285,7 +2342,7 @@ function renderResultsTab(){
       </tr>`;
     }).join('')}
     </tbody></table>
-    <div class="note">High = neither the hub nor a direct supply source reaches the node within target, or there's an unmet-demand shortfall. Med = covered (via hub or direct source, whichever qualifies), but using ≥${Math.round(RISK_MARGIN_THRESHOLD*100)}% of the distance or time budget (little slack if conditions worsen). Low = comfortably covered. "Serviced Via" shows which route is actually being counted on — if it says "Direct: [source]" instead of a hub, that node's own hub couldn't reach it within target, but its supply source could, so the source route is preferred. Add hubs, sources, or capacity to genuinely reduce the High-risk count — it's not a fixed proportion of your network.</div>
+    <div class="note">Service priority is: full trailers at the assigned staging hub, then a direct supply node with enough capacity for the location, then another staged hub. Any qualifying route inside both original distance and time guardrails is Low risk (green). High means no qualifying route meets both guardrails or demand remains unmet.</div>
   </div>
   `;
 }
