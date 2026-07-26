@@ -474,12 +474,57 @@ function downloadTemplate(kind){
   } else if(kind==='asset'){
     csv = 'name,type,capacity\nCompression Unit A,compression,1200\nStorage Tank 1,storage,5000\n';
     filename = 'assets_template.csv';
+  } else if(kind==='distanceOverrides'){
+    // One row per demand-node x active-supply-source pair, pre-filled with a free Google Maps
+    // deep link (no API key, no billing -- this is Google's public "Maps URLs" format, meant
+    // for exactly this: click it, read the real driving distance/time Google shows, type the
+    // numbers into the two blank columns). distance_miles/duration_hours are intentionally left
+    // blank for you to fill in -- only those two columns are read back in on import.
+    const rows = ['demand_node,supply_source,distance_miles,duration_hours,google_maps_link_click_to_look_up'];
+    S.demand.forEach(n=>{
+      activeSupply().forEach(s=>{
+        const link = `https://www.google.com/maps/dir/?api=1&origin=${n.lat},${n.lon}&destination=${s.lat},${s.lon}&travelmode=driving`;
+        rows.push(`"${n.name.replace(/"/g,'""')}","${s.name.replace(/"/g,'""')}",,,${link}`);
+      });
+    });
+    csv = rows.join('\n') + '\n';
+    filename = 'distance_overrides_template.csv';
   } else {
     csv = 'name,city,lat,lon,capacity,cost,status\nExample Source,"Baytown, TX",29.7355,-94.9774,2000,2.10,current\n';
     filename = 'supply_sources_template.csv';
   }
   const blob = new Blob([csv], {type:'text/csv'});
   const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click();
+}
+
+function importDistanceOverridesCSV(file){
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    let objs;
+    try { objs = csvToObjects(e.target.result); } catch(err){ alert('Could not read CSV file: '+err.message); return; }
+    let added=0; const errors=[];
+    const norm = s => (s||'').trim().toLowerCase();
+    objs.forEach((o,idx)=>{
+      const nodeName = pick(o,['demand_node','demand node','node','node_name']);
+      const sourceName = pick(o,['supply_source','supply source','source','source_name']);
+      const distanceMiles = parseFloat(pick(o,['distance_miles','distance','miles']));
+      const durationHours = parseFloat(pick(o,['duration_hours','duration','hours']));
+      const node = S.demand.find(n=>norm(n.name)===norm(nodeName));
+      const source = S.supply.find(s=>norm(s.name)===norm(sourceName));
+      if(!node || !source){
+        errors.push(`Row ${idx+2}: "${nodeName}" / "${sourceName}" doesn't match a current demand node / supply source name`); return;
+      }
+      if(isNaN(distanceMiles) || isNaN(durationHours) || distanceMiles<=0 || durationHours<=0){
+        errors.push(`Row ${idx+2} (${nodeName} -> ${sourceName}): missing or invalid distance_miles / duration_hours -- leave the row out if you haven't looked it up yet`); return;
+      }
+      S.distanceOverrides = S.distanceOverrides.filter(x=>!(x.nodeId===node.id && x.sourceId===source.id));
+      S.distanceOverrides.push({nodeId:node.id, sourceId:source.id, distanceMiles, durationHours});
+      added++;
+    });
+    render();
+    alert(`Import complete: ${added} distance override(s) loaded.` + (errors.length?`\n\n${errors.length} row(s) skipped:\n`+errors.slice(0,10).join('\n')+(errors.length>10?`\n...and ${errors.length-10} more`:''):''));
+  };
+  reader.readAsText(file);
 }
 
 function importDemandCSV(file){
@@ -562,7 +607,7 @@ function importAssetCSV(file){
 let S = {
   demand: [],
   supply: [],
-  params: { trailerCap:400, costPerMile:3.25, avgSpeed:48, safetyDays:3, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 },
+  params: { trailerCap:750, costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 },
   activeTab: 'demand',
   demandForm: null, // editing id or null
   supplyForm: null,
@@ -570,6 +615,7 @@ let S = {
   showTrailerRadius: true, showHycasRadius: true,
   assets: [], assetForm: null,
   assetPlacement: { safetyDays:3, targetRadius:400, targetHours:6 },
+  distanceOverrides: [], // manually looked-up real distances -- see importDistanceOverridesCSV
   pricing: { mode:'buy', trailerPrice: 50000, hycasPrice: 250000, nodePrice: 0,
              trailerLeaseRate: 1500, hycasLeaseRate: 7500, nodeLeaseRate: 0, leaseTermMonths: 36,
              tierDays: '0.5,1,2,3', outputs: [], volumeDiscounts: [] },
@@ -586,114 +632,7 @@ const NOTIFY_ENDPOINT_URL = '';
 const NOTIFY_SECRET = '';
 const NOTIFY_FALLBACK_TEXT = '';
 const ROUTE_ENDPOINT_URL = '/.netlify/functions/route-distance';
-const HYDROGEN_DATA_ENDPOINT_URL = '/.netlify/functions/hydrogen-stations';
-const TOWN_CENTER_ENDPOINT_URL = '/.netlify/functions/town-centers';
-
-// Reverse-geocoded town centers for final placement centroids. The lookup runs through a
-// Netlify function so the ORS key remains private. Until a lookup completes, the calculated
-// centroid is used provisionally; the plan automatically rerenders from the real town center.
-let townCenterCache = new Map();
-let townCenterPending = new Set();
-let townCenterErrors = new Set();
-
-function townCenterKey(lat, lon){
-  return `${lat.toFixed(5)},${lon.toFixed(5)}`;
-}
-
-function resolvePlacementCenter(lat, lon){
-  const town = townCenterCache.get(townCenterKey(lat,lon));
-  if(!town) return {lat, lon, centroidLat:lat, centroidLon:lon, townResolved:false, townOffsetMiles:0};
-  return {
-    ...town,
-    centroidLat:lat,
-    centroidLon:lon,
-    townResolved:true,
-    townOffsetMiles:haversineMiles(lat,lon,town.lat,town.lon),
-  };
-}
-
-async function refreshTownCenters(points){
-  const missing = points.filter(p=>{
-    const key=townCenterKey(p.centroidLat,p.centroidLon);
-    return !townCenterCache.has(key) && !townCenterPending.has(key) && !townCenterErrors.has(key);
-  });
-  if(!missing.length) return;
-  missing.forEach(p=>townCenterPending.add(townCenterKey(p.centroidLat,p.centroidLon)));
-  try{
-    const resp = await fetch(TOWN_CENTER_ENDPOINT_URL, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({points:missing.map(p=>({
-        key:townCenterKey(p.centroidLat,p.centroidLon),
-        lat:p.centroidLat,
-        lon:p.centroidLon,
-      }))}),
-    });
-    if(!resp.ok) throw new Error(await resp.text() || `Town lookup failed (${resp.status})`);
-    const data=await resp.json();
-    const returned=new Set();
-    let addedTown=false;
-    (data.towns||[]).forEach(t=>{
-      returned.add(t.key);
-      if(t.found){ townCenterCache.set(t.key,t); addedTown=true; }
-      else townCenterErrors.add(t.key);
-    });
-    missing.forEach(p=>{
-      const key=townCenterKey(p.centroidLat,p.centroidLon);
-      if(!returned.has(key)) townCenterErrors.add(key);
-    });
-    if(addedTown){
-      // Town-center coordinates change both cluster coverage and routing origins. Restart the
-      // HyCAS minimum-count search and invalidate the prior centroid/facility route signature.
-      hycasRoadSearchFloor=1;
-      placementRoadLastSignature=null;
-    }
-  } catch(err){
-    missing.forEach(p=>townCenterErrors.add(townCenterKey(p.centroidLat,p.centroidLon)));
-    console.warn('Town-center lookup unavailable:',err);
-  } finally {
-    missing.forEach(p=>townCenterPending.delete(townCenterKey(p.centroidLat,p.centroidLon)));
-    setTimeout(render,0);
-  }
-}
-
-function maybeRefreshTownCenters(locations){
-  if(!TOWN_CENTER_ENDPOINT_URL || !locations.length) return;
-  refreshTownCenters(locations);
-}
-
-// Public hydrogen infrastructure from NREL/AFDC. API credentials stay in the Netlify function;
-// the browser receives only the station fields needed for mapping.
-let publicHydrogenStations = [];
-let publicHydrogenStatus = 'idle'; // idle | loading | ready | error
-let publicHydrogenError = '';
-
-async function refreshPublicHydrogenStations(){
-  if(publicHydrogenStatus==='loading') return;
-  publicHydrogenStatus = 'loading';
-  try{
-    const resp = await fetch(HYDROGEN_DATA_ENDPOINT_URL);
-    if(!resp.ok){
-      const msg = await resp.text().catch(()=> '');
-      throw new Error(msg || `Request failed (${resp.status})`);
-    }
-    const data = await resp.json();
-    publicHydrogenStations = Array.isArray(data.stations) ? data.stations : [];
-    publicHydrogenStatus = 'ready';
-    publicHydrogenError = '';
-  } catch(err){
-    publicHydrogenStatus = 'error';
-    publicHydrogenError = err.message;
-  }
-  if(S.activeTab==='results') setTimeout(render, 0);
-}
-
-function hydrogenDataBadge(){
-  if(publicHydrogenStatus==='loading') return '<span style="font-size:11px;color:var(--muted)">Loading public H₂ infrastructure…</span>';
-  if(publicHydrogenStatus==='ready') return `<span style="font-size:11px;color:var(--green)">● ${publicHydrogenStations.length} public H₂ stations loaded</span>`;
-  if(publicHydrogenStatus==='error') return `<span style="font-size:11px;color:var(--red)">Public H₂ data unavailable</span>`;
-  return '<span style="font-size:11px;color:var(--muted)">Public H₂ data not loaded</span>';
-}
+const ROUTE_SECRET = '6e3582f369548bc0edd7ef410ac037b5a2e376d739902bd7';
 
 // Real road-distance layer (Stage 1: Sourcing Plan + the "direct from source" risk path only —
 // see the note in nodeSourceDistance() below for why hub/HyCAS/Asset Placement aren't covered
@@ -705,7 +644,6 @@ let roadDistanceCache = new Map();
 let roadDistanceStatus = 'unconfigured'; // 'unconfigured' | 'idle' | 'loading' | 'ready' | 'error'
 let roadDistanceError = '';
 let roadDistanceLastSignature = null;
-let roadDistanceProvider = '';
 
 function networkSignature(){
   const d = S.demand.map(n=>`${n.id}:${n.lat.toFixed(5)},${n.lon.toFixed(5)}`).join(';');
@@ -713,14 +651,19 @@ function networkSignature(){
   return d + '||' + s;
 }
 
-// Returns {dist, hours, isReal} for a demand node / supply source pair — real road distance if
-// cached, straight-line (with a clear isReal:false flag) otherwise. This is the ONE place that
-// decides which to use, so every consumer (sourcing cost, risk tiering, the UI badge) agrees.
+// Returns {dist, hours, isReal, isOverride} for a demand node / supply source pair. Precedence:
+// (1) a manually-entered override (you looked the real distance up yourself, e.g. via Google
+// Maps, and imported it — see importDistanceOverridesCSV) always wins, since it's a deliberate,
+// specific entry; (2) real road distance from the live routing backend, if configured and
+// cached; (3) straight-line (with a clear isReal:false flag) otherwise. This is the ONE place
+// that decides which to use, so every consumer (sourcing cost, risk tiering, the UI badge) agrees.
 function nodeSourceDistance(node, source){
+  const override = S.distanceOverrides.find(x=>x.nodeId===node.id && x.sourceId===source.id);
+  if(override) return { dist: override.distanceMiles, hours: override.durationHours, isReal: true, isOverride: true };
   const cached = roadDistanceCache.get(node.id+'|'+source.id);
-  if(cached) return { dist: cached.distanceMiles, hours: cached.durationHours, isReal: true };
+  if(cached) return { dist: cached.distanceMiles, hours: cached.durationHours, isReal: true, isOverride: false };
   const dist = haversineMiles(node.lat, node.lon, source.lat, source.lon);
-  return { dist, hours: dist/S.params.avgSpeed, isReal: false };
+  return { dist, hours: dist/S.params.avgSpeed, isReal: false, isOverride: false };
 }
 
 async function refreshRoadDistances(){
@@ -734,14 +677,12 @@ async function refreshRoadDistances(){
   try{
     const supply = activeSupply();
     const controller = new AbortController();
-    // Nationwide HGV matrices routinely take longer than eight seconds. The former timeout
-    // aborted valid OpenRouteService responses just before they completed.
-    const timeoutId = setTimeout(()=>controller.abort(), 25000);
+    const timeoutId = setTimeout(()=>controller.abort(), 8000); // never hang forever on a slow/dead backend
     let resp;
     try{
       resp = await fetch(ROUTE_ENDPOINT_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Notify-Secret': ROUTE_SECRET },
         body: JSON.stringify({
           origins: S.demand.map(n=>[n.lon, n.lat]),
           destinations: supply.map(s=>[s.lon, s.lat]),
@@ -756,7 +697,6 @@ async function refreshRoadDistances(){
       throw new Error(errText || `Request failed (${resp.status})`);
     }
     const data = await resp.json();
-    roadDistanceProvider = data.provider || 'Road routing';
     roadDistanceCache = new Map();
     S.demand.forEach((n,i)=>{
       supply.forEach((s,j)=>{
@@ -798,15 +738,16 @@ function maybeRefreshRoadDistances(){
 // figures (avg/max distance and time) reported for whichever hubs/units/assets were actually
 // chosen — a small, bounded set of real lookups, not one per candidate the search considered.
 //
-// Final mathematical centroids are reverse-geocoded to their nearest town centers before this
-// layer runs, so the route origin, displayed marker, and proposed location all match.
+// Since a computed centroid can land anywhere (including 350m+ from any routable road, which is
+// OpenRouteService's snap tolerance), we route FROM each location's nearest EXISTING facility —
+// already computed and shown to the user as a reference point anyway — rather than the exact
+// mathematical centroid. This is an approximation, not the literal not-yet-built site; the
+// existing "distance from city/facility center" figures already tell the user how rough that
+// approximation is.
 let placementRoadCache = new Map(); // key: "originLat,originLon|nodeId" -> {distanceMiles, durationHours}
 let placementRoadStatus = 'unconfigured';
 let placementRoadError = '';
 let placementRoadLastSignature = null;
-let placementRoadProvider = '';
-let hycasRoadSearchFloor = 1;
-let hycasRoadSearchSignature = '';
 
 function placementSignature(locations){
   // locations: array of {lat, lon, covered:[{id}]}
@@ -819,7 +760,7 @@ function placementRoadKey(originLat, originLon, nodeId){
 
 // Returns {dist, hours, isReal} from a placement location's routing origin to one covered node —
 // real if cached, straight-line otherwise. locationLat/Lon here is the ROUTING ORIGIN (nearest
-// facility location selected by the placement model).
+// facility if one exists, else the raw centroid).
 function placementReachDistance(originLat, originLon, node){
   const cached = placementRoadCache.get(placementRoadKey(originLat, originLon, node.id));
   if(cached) return { dist: cached.distanceMiles, hours: cached.durationHours, isReal: true };
@@ -837,14 +778,12 @@ async function refreshPlacementRoadDistances(locations){
   placementRoadStatus = 'loading';
   try{
     const controller = new AbortController();
-    // Placement matrices are larger than sourcing lookups because they validate every selected
-    // facility against its covered nodes. Allow the Netlify function time to finish the matrix.
-    const timeoutId = setTimeout(()=>controller.abort(), 25000);
+    const timeoutId = setTimeout(()=>controller.abort(), 8000);
     let resp;
     try{
       resp = await fetch(ROUTE_ENDPOINT_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Notify-Secret': ROUTE_SECRET },
         // NOTE: this asks for a full cross-product (every location x every covered node across
         // ALL locations), then only reads the block-diagonal cells each location actually needs
         // -- simpler and safer against ORS's 40-requests/minute cap (one combined request rather
@@ -864,7 +803,6 @@ async function refreshPlacementRoadDistances(locations){
       throw new Error(errText || `Request failed (${resp.status})`);
     }
     const data = await resp.json();
-    placementRoadProvider = data.provider || 'Road routing';
     // Response is one row per ORIGIN (each placement location), against the FULL flattened
     // destination list (each location's own covered nodes, concatenated in order) — so each
     // location's columns are a known, contiguous range we can track with a running offset.
@@ -881,10 +819,7 @@ async function refreshPlacementRoadDistances(locations){
       });
       colStart += loc.covered.length;
     });
-    // Keep matrices already fetched for the other placement sections. Replacing the entire
-    // cache here caused the Hub and HyCAS plans to evict one another and alternate requests on
-    // every render until the routing provider rate-limited the site.
-    newCache.forEach((value,key)=>placementRoadCache.set(key,value));
+    placementRoadCache = newCache;
     placementRoadStatus = 'ready';
     placementRoadError = '';
   } catch(err){
@@ -899,14 +834,6 @@ function maybeRefreshPlacementRoadDistances(locations){
   if(!ROUTE_ENDPOINT_URL){ placementRoadStatus = 'unconfigured'; return; }
   if(placementRoadStatus==='loading') return;
   if(locations.length===0) return;
-  const allCached = locations.every(loc=>
-    loc.covered.every(node=>placementRoadCache.has(placementRoadKey(loc.lat,loc.lon,node.id)))
-  );
-  if(allCached){
-    placementRoadStatus='ready';
-    placementRoadError='';
-    return;
-  }
   const signature = placementSignature(locations);
   if(signature===placementRoadLastSignature && (placementRoadStatus==='ready' || placementRoadStatus==='error')) return;
   refreshPlacementRoadDistances(locations);
@@ -915,15 +842,8 @@ function maybeRefreshPlacementRoadDistances(locations){
 // Recomputes avg/max distance and hours for a set of placement locations using real routing
 // where cached, straight-line otherwise — and kicks off a background fetch for anything not yet
 // cached. Call AFTER the fast clustering search has already picked final locations; never during
-// the search itself. originOf(loc) picks the actual town-center routing origin.
+// the search itself. originOf(loc) picks the actual routing origin (nearest facility if present).
 function applyPlacementReach(locations, originOf){
-  // Do not spend routing quota on provisional mathematical centroids. Wait until every final
-  // centroid has either resolved to a town center or definitively failed its lookup.
-  if(locations.some(l=>l.centroidLat!=null && !l.townResolved &&
-    !townCenterErrors.has(townCenterKey(l.centroidLat,l.centroidLon)))){
-    locations.forEach(l=>{ l.reachIsReal=false; });
-    return;
-  }
   maybeRefreshPlacementRoadDistances(locations.map(l=>{ const o=originOf(l); return {lat:o.lat, lon:o.lon, covered:l.covered}; }));
   locations.forEach(loc=>{
     const origin = originOf(loc);
@@ -977,7 +897,7 @@ function sampleData(){
     {id:uid(), name:'Oklahoma City Regional Fill', city:'Oklahoma City, OK', lat:35.4676, lon:-97.5164, capacity:700, cost:2.60, status:'current'},
     {id:uid(), name:'Planned Beaumont H2 Plant (2027)', city:'Beaumont, TX', lat:30.0802, lon:-94.1266, capacity:1500, cost:2.05, status:'future'},
   ];
-  S.params = { trailerCap:380, costPerMile:3.25, avgSpeed:48, safetyDays:3, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 };
+  S.params = { trailerCap:750, costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 };
 }
 
 /* ===================== OPTIMIZATION ===================== */
@@ -1192,61 +1112,28 @@ function weightedKMeans(points, weights, k, iters){
   return {centers, assign};
 }
 
-// Convert mathematical centroids to the nearest real town centers once the reverse-geocoder has
-// answered. Existing facilities are kept separate and are shown only as an informational nearest
-// neighbor; they never replace the optimizer's proposed location.
-function placementSitesFromCenters(centers){
-  return centers.map(center=>{
-    const [lat,lon]=albersInverse(center[0],center[1]);
-    return resolvePlacementCenter(lat,lon);
-  });
-}
-
-function placementFacilityCandidates(){
-  return [
-    ...S.demand.map(n=>({id:n.id,lat:n.lat,lon:n.lon,name:n.name,type:'Demand Node'})),
-    ...activeSupply().map(s=>({id:s.id,lat:s.lat,lon:s.lon,name:s.name,type:'Supply Source'})),
-  ];
-}
-
-function nearestExistingFacility(lat,lon){
-  const candidates = placementFacilityCandidates();
-  let best=null, bestDist=Infinity;
-  candidates.forEach(c=>{
-    const d=haversineMiles(lat,lon,c.lat,c.lon);
-    if(d<bestDist){best=c;bestDist=d;}
-  });
-  return {facility:best,dist:bestDist};
-}
-
-function assignDemandToPlacementSites(sites){
-  return S.demand.map(n=>{
-    let best=0, bestDist=Infinity;
-    sites.forEach((site,i)=>{
-      const d=haversineMiles(n.lat,n.lon,site.lat,site.lon);
-      if(d<bestDist){bestDist=d;best=i;}
-    });
-    return best;
-  });
-}
-
 function buildHubsForK(baseRisk, k){
   if(S.demand.length===0) return [];
   const pts = S.demand.map(n=>albersXY(n.lat,n.lon));
   const weights = S.demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
-  const {centers} = weightedKMeans(pts, weights, k, 60);
-  const sites = placementSitesFromCenters(centers);
-  const assign = assignDemandToPlacementSites(sites);
+  const {centers, assign} = weightedKMeans(pts, weights, k, 60);
 
-  return sites.map((site, ci)=>{
+  return centers.map((c, ci)=>{
     const covered = S.demand.filter((n,i)=>assign[i]===ci);
     if(covered.length===0) return null;
-    const cLat=site.lat, cLon=site.lon;
-    const cityRef = site.townResolved
-      ? {name:site.name,state:site.state,dist:site.townOffsetMiles}
-      : nearestCityRef(cLat,cLon);
-    const nearest = nearestExistingFacility(cLat,cLon);
-    const nearestFacility=nearest.facility, bestD=nearest.dist;
+    const [cLat, cLon] = albersInverse(c[0], c[1]);
+    const cityRef = nearestCityRef(cLat, cLon);
+
+    // nearest existing facility, shown only as an informational reference point (NOT the recommendation)
+    const candidates = [
+      ...S.demand.map(n=>({lat:n.lat,lon:n.lon,name:n.name,type:'Demand Node'})),
+      ...activeSupply().map(s=>({lat:s.lat,lon:s.lon,name:s.name,type:'Supply Source'})),
+    ];
+    let nearestFacility=null, bestD=Infinity;
+    candidates.forEach(cand=>{
+      const d = haversineMiles(cLat,cLon,cand.lat,cand.lon);
+      if(d<bestD){ bestD=d; nearestFacility=cand; }
+    });
 
     const coveredDemand = covered.reduce((a,n)=>a+n.rate,0);
     const dists = covered.map(n=> haversineMiles(n.lat,n.lon,cLat,cLon));
@@ -1271,9 +1158,7 @@ function buildHubsForK(baseRisk, k){
     const stagingCost = trailers*costPerTrailer;
 
     return {
-      idx: ci+1, lat:cLat, lon:cLon, centroidLat:site.centroidLat, centroidLon:site.centroidLon,
-      townResolved:site.townResolved, townOffsetMiles:site.townOffsetMiles,
-      cityRef, nearestFacility, nearestFacilityDist:bestD,
+      idx: ci+1, lat:cLat, lon:cLon, cityRef, nearestFacility, nearestFacilityDist:bestD,
       covered, coveredDemand, avgDist, maxDist, trailers,
       avgHours: avgDist/S.params.avgSpeed, maxHours: maxDist/S.params.avgSpeed,
       stagingSource, stagingSourceDist, costPerTrailer, stagingCost,
@@ -1302,8 +1187,7 @@ function computeAutoHubs(baseRisk){
   // occasionally show as narrowly missing it once real routing is applied — that's a more honest
   // number surfacing, not a bug, and metTarget below is re-checked against whichever figures are
   // actually being displayed.
-  maybeRefreshTownCenters(last.hubs);
-  applyPlacementReach(last.hubs, h => ({lat:h.lat, lon:h.lon}));
+  applyPlacementReach(last.hubs, h => h.nearestFacility ? {lat:h.nearestFacility.lat, lon:h.nearestFacility.lon} : {lat:h.lat, lon:h.lon});
   last.achievedMaxDist = last.hubs.length? Math.max(...last.hubs.map(h=>h.maxDist)) : 0;
   last.achievedMaxHours = last.hubs.length? Math.max(...last.hubs.map(h=>h.maxHours)) : 0;
   last.metTarget = last.achievedMaxDist<=S.params.targetRadius && last.achievedMaxHours<=S.params.targetHours;
@@ -1325,19 +1209,23 @@ function buildHycasForK(baseRisk, k){
   if(S.demand.length===0) return [];
   const pts = S.demand.map(n=>albersXY(n.lat,n.lon));
   const weights = S.demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
-  const {centers} = weightedKMeans(pts, weights, k, 60);
-  const sites = placementSitesFromCenters(centers);
-  const assign = assignDemandToPlacementSites(sites);
+  const {centers, assign} = weightedKMeans(pts, weights, k, 60);
 
-  return sites.map((site, ci)=>{
+  return centers.map((c, ci)=>{
     const covered = S.demand.filter((n,i)=>assign[i]===ci);
     if(covered.length===0) return null;
-    const cLat=site.lat, cLon=site.lon;
-    const cityRef = site.townResolved
-      ? {name:site.name,state:site.state,dist:site.townOffsetMiles}
-      : nearestCityRef(cLat,cLon);
-    const nearest = nearestExistingFacility(cLat,cLon);
-    const nearestFacility=nearest.facility, bestD=nearest.dist;
+    const [cLat, cLon] = albersInverse(c[0], c[1]);
+    const cityRef = nearestCityRef(cLat, cLon);
+
+    const candidates = [
+      ...S.demand.map(n=>({lat:n.lat,lon:n.lon,name:n.name,type:'Demand Node'})),
+      ...activeSupply().map(s=>({lat:s.lat,lon:s.lon,name:s.name,type:'Supply Source'})),
+    ];
+    let nearestFacility=null, bestD=Infinity;
+    candidates.forEach(cand=>{
+      const d = haversineMiles(cLat,cLon,cand.lat,cand.lon);
+      if(d<bestD){ bestD=d; nearestFacility=cand; }
+    });
 
     const dists = covered.map(n=> haversineMiles(n.lat,n.lon,cLat,cLon));
     const avgDist = dists.length? dists.reduce((a,b)=>a+b,0)/dists.length : 0;
@@ -1348,9 +1236,7 @@ function buildHycasForK(baseRisk, k){
     const capacitySufficient = maxNodeRate <= S.params.hycasCapacity;
 
     return {
-      idx: ci+1, lat:cLat, lon:cLon, centroidLat:site.centroidLat, centroidLon:site.centroidLon,
-      townResolved:site.townResolved, townOffsetMiles:site.townOffsetMiles,
-      cityRef, nearestFacility, nearestFacilityDist:bestD,
+      idx: ci+1, lat:cLat, lon:cLon, cityRef, nearestFacility, nearestFacilityDist:bestD,
       covered, avgDist, maxDist, avgHours: avgDist/S.params.avgSpeed, maxHours: maxDist/S.params.avgSpeed,
       maxNodeRate, capacitySufficient,
     };
@@ -1360,13 +1246,8 @@ function buildHycasForK(baseRisk, k){
 function computeAutoHycas(baseRisk){
   if(S.demand.length===0) return {units:[], k:0, achievedMaxDist:0, achievedMaxHours:0, metTarget:true, searchCapped:false};
   const cap = Math.min(S.demand.length, 40);
-  const searchSignature = `${networkSignature()}|${S.params.hycasRadius}|${S.params.hycasHours}`;
-  if(searchSignature!==hycasRoadSearchSignature){
-    hycasRoadSearchSignature=searchSignature;
-    hycasRoadSearchFloor=1;
-  }
   let last = null;
-  for(let k=hycasRoadSearchFloor; k<=cap; k++){
+  for(let k=1; k<=cap; k++){
     const units = buildHycasForK(baseRisk, k);
     const achievedMaxDist = units.length? Math.max(...units.map(u=>u.maxDist)) : 0;
     const achievedMaxHours = units.length? Math.max(...units.map(u=>u.maxHours)) : 0;
@@ -1374,24 +1255,13 @@ function computeAutoHycas(baseRisk){
     last = {units, k, achievedMaxDist, achievedMaxHours, metTarget, searchCapped:false};
     if(metTarget) break;
   }
-  maybeRefreshTownCenters(last.units);
-  // Validate the town-center result with real roads. If the road matrix proves that the
-  // straight-line-selected count misses the target, advance the minimum count and re-render.
-  // The next pass evaluates one or more additional unique facilities instead of remaining stuck
-  // on the count that only worked geometrically.
-  applyPlacementReach(last.units, u => ({lat:u.lat, lon:u.lon}));
+  if(!last.metTarget) last.searchCapped = true;
+  // See computeAutoHubs' comment for why the search stays straight-line and only the final
+  // reported reach is upgraded to real routing.
+  applyPlacementReach(last.units, u => u.nearestFacility ? {lat:u.nearestFacility.lat, lon:u.nearestFacility.lon} : {lat:u.lat, lon:u.lon});
   last.achievedMaxDist = last.units.length? Math.max(...last.units.map(u=>u.maxDist)) : 0;
   last.achievedMaxHours = last.units.length? Math.max(...last.units.map(u=>u.maxHours)) : 0;
   last.metTarget = last.achievedMaxDist<=S.params.hycasRadius && last.achievedMaxHours<=S.params.hycasHours;
-  const roadValidated = last.units.length>0 && last.units.every(u=>u.reachIsReal);
-  if(roadValidated && !last.metTarget && last.k<cap){
-    hycasRoadSearchFloor=last.k+1;
-    last.searchCapped=false;
-    setTimeout(render,0);
-  } else {
-    last.searchCapped=!last.metTarget && last.k>=cap;
-  }
-  last.roadValidated=roadValidated;
   return last;
 }
 
@@ -1412,19 +1282,23 @@ function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays){
   const k = Math.max(1, Math.min(assetList.length, S.demand.length));
   const pts = S.demand.map(n=>albersXY(n.lat,n.lon));
   const weights = S.demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
-  const {centers} = weightedKMeans(pts, weights, k, 60);
-  const sites = placementSitesFromCenters(centers);
-  const assign = assignDemandToPlacementSites(sites);
+  const {centers, assign} = weightedKMeans(pts, weights, k, 60);
 
-  const clusters = sites.map((site, ci)=>{
+  const clusters = centers.map((c, ci)=>{
     const covered = S.demand.filter((n,i)=>assign[i]===ci);
     if(covered.length===0) return null;
-    const cLat=site.lat, cLon=site.lon;
-    const cityRef = site.townResolved
-      ? {name:site.name,state:site.state,dist:site.townOffsetMiles}
-      : nearestCityRef(cLat,cLon);
-    const nearest = nearestExistingFacility(cLat,cLon);
-    const nearestFacility=nearest.facility, bestD=nearest.dist;
+    const [cLat, cLon] = albersInverse(c[0], c[1]);
+    const cityRef = nearestCityRef(cLat, cLon);
+
+    const candidates = [
+      ...S.demand.map(n=>({lat:n.lat,lon:n.lon,name:n.name,type:'Demand Node'})),
+      ...activeSupply().map(s=>({lat:s.lat,lon:s.lon,name:s.name,type:'Supply Source'})),
+    ];
+    let nearestFacility=null, bestD=Infinity;
+    candidates.forEach(cand=>{
+      const d = haversineMiles(cLat,cLon,cand.lat,cand.lon);
+      if(d<bestD){ bestD=d; nearestFacility=cand; }
+    });
 
     const dists = covered.map(n=> haversineMiles(n.lat,n.lon,cLat,cLon));
     const avgDist = dists.length? dists.reduce((a,b)=>a+b,0)/dists.length : 0;
@@ -1436,9 +1310,7 @@ function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays){
     const need = assetType==='compression' ? maxNodeRate : coveredDemand*safetyDays;
 
     return {
-      lat:cLat, lon:cLon, centroidLat:site.centroidLat, centroidLon:site.centroidLon,
-      townResolved:site.townResolved, townOffsetMiles:site.townOffsetMiles,
-      cityRef, nearestFacility, nearestFacilityDist:bestD,
+      lat:cLat, lon:cLon, cityRef, nearestFacility, nearestFacilityDist:bestD,
       covered, coveredDemand, avgDist, maxDist, avgHours: avgDist/S.params.avgSpeed, maxHours: maxDist/S.params.avgSpeed,
       maxNodeRate, need,
     };
@@ -1471,8 +1343,7 @@ function computeAssetPlacement(){
     const assets = buildAssetPlacementForType(baseRisk, list, type, ap.safetyDays);
     // Asset Placement has no auto-search loop (the count is fixed by inventory), so real reach
     // can be applied directly to whatever the clustering+matching step produced.
-    maybeRefreshTownCenters(assets);
-    applyPlacementReach(assets, a => ({lat:a.lat, lon:a.lon}));
+    applyPlacementReach(assets, a => a.nearestFacility ? {lat:a.nearestFacility.lat, lon:a.nearestFacility.lon} : {lat:a.lat, lon:a.lon});
     const achievedMaxDist = assets.length? Math.max(...assets.map(a=>a.maxDist)) : 0;
     const achievedMaxHours = assets.length? Math.max(...assets.map(a=>a.maxHours)) : 0;
     const withinTarget = achievedMaxDist<=ap.targetRadius && achievedMaxHours<=ap.targetHours;
@@ -1758,7 +1629,6 @@ function downloadDiscountTemplate(){
 /* ===================== RENDER: SHELL ===================== */
 function render(){
   maybeRefreshRoadDistances();
-  if(S.activeTab==='results' && publicHydrogenStatus==='idle') refreshPublicHydrogenStations();
   const cntDemandEl = document.getElementById('cntDemand');
   if(cntDemandEl) cntDemandEl.textContent = S.demand.length;
   const cntSupplyEl = document.getElementById('cntSupply');
@@ -1954,7 +1824,7 @@ function renderParamsTab(){
     </div>
     <div class="field">
       <label>Target Max Resupply Time (hours): <span class="rangeval" id="pTargetHoursVal">${p.targetHours} h</span></label>
-      <input id="pTargetHours" type="range" min="0.5" max="12" step="0.5" value="${p.targetHours}">
+      <input id="pTargetHours" type="range" min="0.5" max="24" step="0.5" value="${p.targetHours}">
       <div class="note">What matters here is <b>where gas actually gets delivered</b>, not where it's sourced from. The tool automatically recommends the <b>smallest number of staging hubs</b> needed so every demand node is reachable from its hub within <b>both</b> the distance and time targets above — a node that violates either one is treated as higher risk in the Risk Assessment, regardless of how close its supply source is. Lower either lever for tighter, more resilient coverage (more hubs); raise them to consolidate into fewer hubs.</div>
     </div>
 
@@ -1980,9 +1850,31 @@ function renderParamsTab(){
 let lastComputed = null;
 // Shared status badge for hub/HyCAS/Asset Placement reach figures — same states as the Sourcing
 // Plan's road-distance badge, since it's the same underlying cache.
+// Sourcing Plan's badge -- accounts for manual overrides (see importDistanceOverridesCSV) on top
+// of the live routing status, since coverage between the two can be partial.
+function sourcingDistanceBadge(){
+  const overrideCount = S.distanceOverrides.length;
+  const totalPairs = S.demand.length * activeSupply().length;
+  const fullyOverridden = overrideCount>0 && overrideCount>=totalPairs;
+  if(fullyOverridden) return '<span class="tag tag-low">\u2713 Real road distances (manual overrides)</span>';
+  if(roadDistanceStatus==='ready'){
+    return overrideCount>0
+      ? `<span class="tag tag-low">\u2713 Real road distances (${overrideCount} manual override(s) + OpenRouteService)</span>`
+      : '<span class="tag tag-low">\u2713 Real road distances (OpenRouteService)</span>';
+  }
+  if(roadDistanceStatus==='loading') return '<span class="tag tag-med">Fetching real road distances\u2026</span>';
+  if(roadDistanceStatus==='error'){
+    return `<span class="tag tag-high" title="${esc(roadDistanceError)}">\u26a0 Real routing failed \u2014 showing straight-line</span> <a href="#" id="lnkRetryRoadDistance" style="font-size:11px;color:var(--blue);margin-left:6px">Retry</a>`
+      + (overrideCount>0?` <span style="color:#AAB2BD;font-size:11px">(${overrideCount} manual override(s) still applied)</span>`:'');
+  }
+  return overrideCount>0
+    ? `<span class="tag tag-med">${overrideCount} of ${totalPairs} pair(s) have manual real distances \u2014 rest straight-line</span>`
+    : '<span class="tag tag-med">Straight-line distance (real routing not configured)</span>';
+}
+
 function placementReachBadge(){
-  if(placementRoadStatus==='ready') return `<span class="tag tag-low">\u2713 Real road reach (${esc(placementRoadProvider||'routing provider')})</span>`;
-  if(placementRoadStatus==='loading') return '<span class="tag tag-med">Fetching real road reach\u2026 large networks may take 20\u201325 seconds</span>';
+  if(placementRoadStatus==='ready') return '<span class="tag tag-low">\u2713 Real road reach (OpenRouteService)</span>';
+  if(placementRoadStatus==='loading') return '<span class="tag tag-med">Fetching real road reach\u2026</span>';
   if(placementRoadStatus==='error') return `<span class="tag tag-high" title="${esc(placementRoadError)}">\u26a0 Real routing failed \u2014 showing straight-line</span> <a href="#" class="lnkRetryPlacementRoad" style="font-size:11px;color:var(--blue);margin-left:6px">Retry</a>`;
   return '<span class="tag tag-med">Straight-line reach (real routing not configured)</span>';
 }
@@ -1999,7 +1891,6 @@ function renderResultsTab(){
   const kpi = computeKPIs(sourcing, risk, hubs);
   const hycasPlan = computeAutoHycas(baseRisk);
   const hycasUnits = hycasPlan.units;
-  const hycasConfirmed = hycasPlan.metTarget && hycasPlan.roadValidated;
   lastComputed = {sourcing, risk, hubs, hubPlan, kpi, hycasPlan, hycasUnits};
 
   const supply = activeSupply();
@@ -2049,8 +1940,6 @@ function renderResultsTab(){
     <div class="toolbar">
       <label class="maptogglelabel"><input type="checkbox" id="chkShowTrailerRadius" ${S.showTrailerRadius?'checked':''}> Show trailer delivery radius</label>
       <label class="maptogglelabel"><input type="checkbox" id="chkShowHycasRadius" ${S.showHycasRadius?'checked':''}> Show HyCAS response radius</label>
-      ${hydrogenDataBadge()}
-      ${publicHydrogenStatus==='error'?'<button class="btn btn-small btn-outline" id="btnRetryHydrogenData">Retry public H₂ data</button>':''}
     </div>
     <div class="mapwrap" style="max-width:1160px;margin:0 auto">
       <svg id="mapsvg" viewBox="0 0 ${PROJ.VBW} ${PROJ.VBH}" style="width:100%;height:auto;display:block;background:var(--map-bg)"></svg>
@@ -2063,24 +1952,23 @@ function renderResultsTab(){
         <div class="item"><span class="swatch" style="background:var(--amber);border-radius:2px;transform:rotate(45deg)"></span>Proposed staging hub</div>
         ${S.showTrailerRadius?`<div class="item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:1.3px solid var(--amber);background:rgba(242,169,0,.08);margin-right:6px;vertical-align:middle"></span>Delivery radius (${fmt(S.params.targetRadius,0)} mi)</div>`:''}
         <div class="item"><span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #7A5195;margin-right:6px;vertical-align:middle"></span>Mobile HyCAS unit</div>
-        ${publicHydrogenStations.length?'<div class="item"><span class="swatch" style="background:#00A6A6;border:2px solid #fff;box-shadow:0 0 0 1px #007C7C"></span>Public hydrogen station (NREL)</div>':''}
         ${S.showHycasRadius?`<div class="item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:1.3px dashed #7A5195;background:rgba(122,81,149,.05);margin-right:6px;vertical-align:middle"></span>HyCAS response radius (${fmt(S.params.hycasRadius,0)} mi)</div>`:''}
       </div>
       <div class="maptooltip" id="mapTooltip"></div>
     </div>
-    <div class="note">Node size = consumption rate. Line thickness = allocated flow volume. Diamond markers are proposed staging locations at the nearest town center to each calculated cluster centroid. Solid circles show your configured <b>Target Delivery Radius</b> (${fmt(S.params.targetRadius,0)} mi), the same for every hub. Public hydrogen stations are context only and are not assumed to have available commercial capacity.</div>
+    <div class="note">Node size = consumption rate. Line thickness = allocated flow volume. Diamond markers are proposed hub <b>centroid locations</b> (not existing sites) — solid circles show your configured <b>Target Delivery Radius</b> (${fmt(S.params.targetRadius,0)} mi), the same for every hub. A covered node sitting outside its hub's circle is beyond your target delivery distance even after this hub is staged.</div>
   </div>
 
   <div class="card">
     <div class="flexbetween"><h2 style="margin-bottom:0">Resiliency &amp; Trailer Pre-Positioning Plan</h2>${placementReachBadge()}</div>
-    <p class="desc">Each weighted cluster center is matched to its nearest real town center. Coverage and real-road reach are calculated from that town center; the nearest existing facility is shown separately for context. Confirm operational suitability and available yard space before deployment.</p>
+    <p class="desc">Proposed staging locations are geometric centroids of the demand they cover — not existing facilities — since yard space at a real site isn't guaranteed. City/state is the nearest reference point for orientation, not a claim there's a site there; use the nearest-facility column to scout actual land nearby.</p>
     <table><thead><tr><th>Hub #</th><th>Proposed Location</th><th>Nearest Existing Facility</th><th>Nodes Covered</th><th>Coverage Demand (${S.params.unit}/day)</th><th>Avg Reach</th><th>Max Reach</th><th>Trailers to Stage</th><th>Fill Source</th><th>One-Time Staging Cost</th></tr></thead>
     <tbody>
     ${hubs.map(h=>`
       <tr>
         <td><b>Hub ${h.idx}</b></td>
         <td>${h.cityRef?`<b>${esc(h.cityRef.name)}, ${esc(h.cityRef.state)}</b> area`:'<b>Unnamed area</b>'}<br>
-            <span style="color:#AAB2BD">${h.lat.toFixed(3)}, ${h.lon.toFixed(3)}${h.townResolved?' · ~'+fmt(h.townOffsetMiles,0)+' mi from calculated centroid':' · locating nearest town…'}</span></td>
+            <span style="color:#AAB2BD">${h.lat.toFixed(3)}, ${h.lon.toFixed(3)}${h.cityRef?' · ~'+fmt(h.cityRef.dist,0)+' mi from city center':''}</span></td>
         <td>${h.nearestFacility?`${esc(h.nearestFacility.name)}<br><span style="color:#AAB2BD">${fmt(h.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
         <td>${h.covered.length}</td>
         <td>${fmt(h.coveredDemand)}</td>
@@ -2091,7 +1979,7 @@ function renderResultsTab(){
         <td><b>${money(h.stagingCost,0)}</b>${h.trailers>0?`<br><span style="color:#AAB2BD">${money(h.costPerTrailer,0)}/trailer</span>`:''}</td>
       </tr>`).join('')}
     </tbody></table>
-    <div class="note">Trailer count = ceil(covered daily demand × average safety-stock days ÷ trailer capacity). Hub count is chosen automatically via weighted clustering, and each final centroid is moved to the nearest town center before coverage and routing are recalculated. <b>Staging cost</b> is a one-time figure: cheapest active source's fill cost (trailer capacity × $/unit) plus a single one-way delivery trip to the hub, for every trailer being staged there — it is not capacity-constrained the way the daily Sourcing Plan is.</div>
+    <div class="note">Trailer count = ceil(covered daily demand × average safety-stock days ÷ trailer capacity). Hub count and locations are chosen automatically via weighted clustering (prioritizing high-risk, far-from-source, single-sourced, high-consumption nodes) to hit your target resupply time with the fewest hubs. Travel time = great-circle distance ÷ average transit speed — treat it as a lower bound; real road routes will typically run longer. City/state labels come from the nearest of ~200 major U.S. cities in a reference list, so in sparsely-populated areas the named city may be 50+ miles from the actual proposed point — always check the lat/lon and "mi from city center" figure, not just the name. <b>Staging cost</b> is a one-time figure: cheapest active source's fill cost (trailer capacity × $/unit) plus a single one-way delivery trip to the hub, for every trailer being staged there — it is not capacity-constrained the way the daily Sourcing Plan is, since it assumes a source can produce enough over some ramp-up period to fill a handful of trailers once.</div>
   </div>
 
   <div class="card">
@@ -2100,15 +1988,11 @@ function renderResultsTab(){
       ${placementReachBadge()}
     </div>
     ${hycasUnits.length===0?'<div class="empty">No units recommended — add demand nodes to generate a placement plan.</div>':`
-    <div class="card" style="border-color:${hycasConfirmed?'#CDE9DC':'#F3DDB0'};background:${hycasConfirmed?'#F3FBF7':'#FFFBF0'};margin-bottom:14px">
-      <b style="color:${hycasConfirmed?'#177A4C':'#B57500'}">${hycasConfirmed?'✓':'◷'} ${hycasConfirmed?'System-recommended':'Preliminary'} HyCAS unit count: ${hycasPlan.k}</b>
-      &nbsp;—&nbsp; ${hycasConfirmed
-        ? `real-road validation confirms every demand node is reachable within the ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h HyCAS response targets (worst case: ${fmt(hycasPlan.achievedMaxDist,0)} mi, ${fmtHours(hycasPlan.achievedMaxHours)}).`
-      : hycasPlan.metTarget && !hycasPlan.roadValidated
-        ? `town-center geometry meets the target provisionally; waiting for the road matrix before confirming this recommendation. Current geometric worst case: <b>${fmt(hycasPlan.achievedMaxDist,0)} mi / ${fmtHours(hycasPlan.achievedMaxHours)}</b>.`
-      : hycasPlan.searchCapped
-        ? `all ${hycasPlan.k} available facility location(s) were evaluated; best achievable worst case is <b>${fmt(hycasPlan.achievedMaxDist,0)} mi / ${fmtHours(hycasPlan.achievedMaxHours)}</b>, still short of your ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h targets. Consider adding candidate staging facilities or adjusting the targets.`
-        : `real-road validation is expanding the search beyond ${hycasPlan.k} town-center unit(s). Current worst case is <b>${fmt(hycasPlan.achievedMaxDist,0)} mi / ${fmtHours(hycasPlan.achievedMaxHours)}</b> versus your ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h targets.`}
+    <div class="card" style="border-color:${hycasPlan.metTarget?'#CDE9DC':'#F3DDB0'};background:${hycasPlan.metTarget?'#F3FBF7':'#FFFBF0'};margin-bottom:14px">
+      <b style="color:${hycasPlan.metTarget?'#177A4C':'#B57500'}">${hycasPlan.metTarget?'✓':'⚠'} System-recommended HyCAS unit count: ${hycasPlan.k}</b>
+      &nbsp;—&nbsp; ${hycasPlan.metTarget
+        ? `every demand node is reachable within the ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h HyCAS response targets (worst case: ${fmt(hycasPlan.achievedMaxDist,0)} mi, ${fmtHours(hycasPlan.achievedMaxHours)}).`
+        : `search capped at ${hycasPlan.k} unit(s); best achievable worst case is <b>${fmt(hycasPlan.achievedMaxDist,0)} mi / ${fmtHours(hycasPlan.achievedMaxHours)}</b>, still short of your ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h targets. Consider raising one or both HyCAS targets, or splitting the network.`}
     </div>
     <table><thead><tr><th>Unit #</th><th>Proposed Location</th><th>Nearest Existing Facility</th><th>Nodes Covered</th><th>Avg Reach</th><th>Max Reach</th><th>Largest Covered Node</th><th>Capacity Check</th></tr></thead>
     <tbody>
@@ -2116,7 +2000,7 @@ function renderResultsTab(){
       <tr>
         <td><b>Unit ${u.idx}</b></td>
         <td>${u.cityRef?`<b>${esc(u.cityRef.name)}, ${esc(u.cityRef.state)}</b> area`:'<b>Unnamed area</b>'}<br>
-            <span style="color:#AAB2BD">${u.lat.toFixed(3)}, ${u.lon.toFixed(3)}${u.townResolved?' · ~'+fmt(u.townOffsetMiles,0)+' mi from calculated centroid':' · locating nearest town…'}</span></td>
+            <span style="color:#AAB2BD">${u.lat.toFixed(3)}, ${u.lon.toFixed(3)}${u.cityRef?' · ~'+fmt(u.cityRef.dist,0)+' mi from city center':''}</span></td>
         <td>${u.nearestFacility?`${esc(u.nearestFacility.name)}<br><span style="color:#AAB2BD">${fmt(u.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
         <td>${u.covered.length}</td>
         <td>${fmt(u.avgDist,0)} mi <span style="color:#AAB2BD">(${fmtHours(u.avgHours)})</span></td>
@@ -2132,10 +2016,7 @@ function renderResultsTab(){
   <div class="card">
     <div class="flexbetween">
       <h2 style="margin-bottom:0">Sourcing Plan</h2>
-      ${roadDistanceStatus==='ready'?`<span class="tag tag-low">\u2713 Real road distances (${esc(roadDistanceProvider||'routing provider')})</span>`
-        :roadDistanceStatus==='loading'?'<span class="tag tag-med">Fetching real road distances\u2026</span>'
-        :roadDistanceStatus==='error'?'<span class="tag tag-high" title="'+esc(roadDistanceError)+'">\u26a0 Real routing failed \u2014 showing straight-line</span> <a href="#" id="lnkRetryRoadDistance" style="font-size:11px;color:var(--blue);margin-left:6px">Retry</a>'
-        :'<span class="tag tag-med">Straight-line distance (real routing not configured)</span>'}
+      ${sourcingDistanceBadge()}
     </div>
     <p class="desc">Least-landed-cost assignment of supply sources to demand nodes, respecting source capacity. Trailers are always dispatched full, so daily volume is rounded up to whole trailer loads — cost reflects that.</p>
     <table><thead><tr><th>Demand Node</th><th>Assigned Source</th><th>Distance (mi)</th><th>Travel Time</th><th>Volume (${S.params.unit}/day)</th><th>Trailers/day</th><th>Landed Cost ($/${S.params.unit})</th><th>Daily Cost</th></tr></thead>
@@ -2160,6 +2041,33 @@ function renderResultsTab(){
     }).join('')}
     </tbody></table>
     <div class="note">Trailers/day = ceil(volume assigned on that lane ÷ trailer capacity) — a lane moving even 1 kg over a full trailer's capacity requires a second trailer, so landed cost per ${S.params.unit} can run higher than the simple distance-based rate on low-volume lanes.</div>
+  </div>
+
+  <div class="card">
+    <div class="flexbetween">
+      <h2 style="margin-bottom:0">Distance Overrides <span style="color:#AAB2BD;font-weight:400">(${S.distanceOverrides.length})</span></h2>
+      <div class="toolbar">
+        <button class="btn btn-small btn-outline" id="btnDistOverrideTemplate">Download Template</button>
+        <button class="btn btn-small btn-outline" id="btnDistOverrideImport">Import CSV</button>
+        <input type="file" id="distOverrideCsvFile" accept=".csv" style="display:none">
+      </div>
+    </div>
+    <p class="desc">No live routing service required. The template includes a clickable Google Maps link for every demand-node/supply-source pair — click it, read the real driving distance and time Google shows, type them into the two blank columns, then import. A manual override always takes precedence over both live routing and straight-line for that specific pair, and re-importing updates or adds to your existing list rather than replacing it.</p>
+    ${S.distanceOverrides.length===0?'<div class="empty">No manual overrides loaded yet.</div>':`
+    <table><thead><tr><th>Demand Node</th><th>Supply Source</th><th>Distance (mi)</th><th>Duration</th><th></th></tr></thead>
+    <tbody>
+    ${S.distanceOverrides.map(o=>{
+      const n = S.demand.find(x=>x.id===o.nodeId), s = S.supply.find(x=>x.id===o.sourceId);
+      if(!n || !s) return '';
+      return `<tr>
+        <td>${esc(n.name)}</td>
+        <td>${esc(s.name)}</td>
+        <td>${fmt(o.distanceMiles,1)}</td>
+        <td>${fmtHours(o.durationHours)}</td>
+        <td><button class="btn btn-small btn-danger" data-del-dist-override="${o.nodeId}|${o.sourceId}">Remove</button></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`}
   </div>
 
   <div class="card">
@@ -2372,7 +2280,7 @@ function renderAssetPlacementTab(){
         <tr>
           <td><b>${esc(a.assetName)}</b><br><span style="color:#AAB2BD">cap. ${fmt(a.assetCapacity,0)}</span></td>
           <td>${a.cityRef?`<b>${esc(a.cityRef.name)}, ${esc(a.cityRef.state)}</b> area`:'<b>Unnamed area</b>'}<br>
-              <span style="color:#AAB2BD">${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}${a.townResolved?' · ~'+fmt(a.townOffsetMiles,0)+' mi from calculated centroid':' · locating nearest town…'}</span></td>
+              <span style="color:#AAB2BD">${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}${a.cityRef?' · ~'+fmt(a.cityRef.dist,0)+' mi from city center':''}</span></td>
           <td>${a.nearestFacility?`${esc(a.nearestFacility.name)}<br><span style="color:#AAB2BD">${fmt(a.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
           <td>${a.covered.length}</td>
           <td>${fmt(a.coveredDemand)} ${S.params.unit}/day</td>
@@ -2452,7 +2360,7 @@ function renderAssetPlacementTab(){
       ${resultSection('Compression', result.compression, 'compression throughput')}
       ${resultSection('H2 Storage', result.storage, 'storage capacity')}
       ${result.compression.assets.length===0 && result.storage.assets.length===0?'<div class="card"><div class="empty">Add at least one asset to see a placement plan.</div></div>':''}
-      <div class="note" style="margin-top:0">Each weighted cluster center is matched to its nearest real town center. Coverage and reach are evaluated from that town center, while the nearest existing facility is shown separately for context. Confirm operational suitability and available yard space before deployment. Compression and H2 Storage are placed independently of each other.</div>
+      <div class="note" style="margin-top:0">Locations are geometric centroids of the demand they cover, weighted the same way hub/HyCAS placement is (risk, distance-from-source, consumption) — not existing facilities. "Nearest Existing Facility" is a scouting reference, not a guarantee of available land there. Compression and H2 Storage are placed independently of each other. This tool does not change anything on Optimization Results.</div>
       `}
     </div>
   </div>`;
@@ -2613,7 +2521,7 @@ function drawMap(){
     html += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#8FA3BF" stroke-width="${w.toFixed(2)}" opacity="0.55"/>`;
   });
 
-  // hub delivery-radius circles + hub markers (facility-snapped locations, diamond markers)
+  // hub delivery-radius circles + hub markers (proposed centroid locations, diamond markers)
   // Radius is a fixed value driven directly by Parameters: Target Max Resupply Time x Average Transit Speed —
   // not an empirical average of actual covered-node distances — so every hub draws the same-size circle,
   // letting you visually spot any covered node that falls outside the configured delivery radius.
@@ -2674,15 +2582,6 @@ function drawMap(){
     html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="${riskColor[tier]}" stroke="#fff" stroke-width="1.3" opacity="0.92" class="node-demand" data-id="${n.id}" style="cursor:pointer"/>`;
   });
 
-  // Verified public hydrogen-fueling locations from NREL/AFDC. These are context markers only;
-  // they do not become supply sources or affect optimization until the user explicitly imports
-  // a location with commercial capacity and cost assumptions.
-  publicHydrogenStations.forEach(st=>{
-    if(!Number.isFinite(st.latitude) || !Number.isFinite(st.longitude)) return;
-    const [x,y]=svgXY(st.latitude,st.longitude);
-    html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="#00A6A6" stroke="#FFFFFF" stroke-width="1" opacity="0.9" class="node-public-h2" data-id="${st.id}" style="cursor:pointer"/>`;
-  });
-
   svg.innerHTML = html;
 
   const tooltip = document.getElementById('mapTooltip');
@@ -2731,25 +2630,11 @@ function drawMap(){
     });
     el.addEventListener('mouseleave', ()=>tooltip.style.display='none');
   });
-  svg.querySelectorAll('.node-public-h2').forEach(el=>{
-    el.addEventListener('mousemove', evt=>{
-      const st = publicHydrogenStations.find(x=>String(x.id)===String(el.dataset.id));
-      if(!st) return;
-      const status = st.status==='E' ? 'Open' : st.status==='P' ? 'Planned' : st.status==='T' ? 'Temporarily unavailable' : st.status;
-      showTooltip(evt, `<b>${esc(st.name||'Hydrogen station')}</b><br>
-        <span class="mut">${esc([st.address,st.city,st.state].filter(Boolean).join(', '))}</span><br>
-        Status: ${esc(status||'Unknown')}<br>
-        Access: ${esc(st.access||'Unknown')}<br>
-        ${st.pressures&&st.pressures.length?`Pressure: ${esc(st.pressures.join(', '))} bar<br>`:''}
-        <span class="mut">Source: NREL Alternative Fuels Data Center</span>`);
-    });
-    el.addEventListener('mouseleave', ()=>tooltip.style.display='none');
-  });
   svg.querySelectorAll('.node-hub').forEach(el=>{
     el.addEventListener('mousemove', evt=>{
       const h = hubs.find(x=>('hub'+x.idx)===el.dataset.id);
       const deliveryRadiusMiles = S.params.targetRadius;
-      showTooltip(evt, `<b>Proposed Staging Hub ${h.idx}</b><br><span class="mut">${h.cityRef?esc(h.cityRef.name)+', '+esc(h.cityRef.state)+' · ':''}${h.lat.toFixed(3)}, ${h.lon.toFixed(3)}${h.townResolved?' · ~'+fmt(h.townOffsetMiles,0)+' mi from calculated centroid':''}</span><br>
+      showTooltip(evt, `<b>Proposed Staging Hub ${h.idx}</b><br><span class="mut">${h.lat.toFixed(3)}, ${h.lon.toFixed(3)}${h.cityRef?' — ~'+fmt(h.cityRef.dist,0)+' mi from '+esc(h.cityRef.name)+', '+esc(h.cityRef.state):''}</span><br>
         Covers ${h.covered.length} node(s), ${fmt(h.coveredDemand)} ${S.params.unit}/day<br>
         Recommended trailers: <b>${h.trailers}</b><br>
         Configured delivery radius: <b>${fmt(deliveryRadiusMiles,0)} mi</b><br>
@@ -2760,7 +2645,7 @@ function drawMap(){
   svg.querySelectorAll('.node-hycas').forEach(el=>{
     el.addEventListener('mousemove', evt=>{
       const u = hycasUnits.find(x=>('hycas'+x.idx)===el.dataset.id);
-      showTooltip(evt, `<b>Mobile HyCAS Unit ${u.idx}</b><br><span class="mut">${u.cityRef?esc(u.cityRef.name)+', '+esc(u.cityRef.state)+' · ':''}${u.lat.toFixed(3)}, ${u.lon.toFixed(3)}${u.townResolved?' · ~'+fmt(u.townOffsetMiles,0)+' mi from calculated centroid':''}</span><br>
+      showTooltip(evt, `<b>Mobile HyCAS Unit ${u.idx}</b><br><span class="mut">${u.lat.toFixed(3)}, ${u.lon.toFixed(3)}${u.cityRef?' — ~'+fmt(u.cityRef.dist,0)+' mi from '+esc(u.cityRef.name)+', '+esc(u.cityRef.state):''}</span><br>
         Covers ${u.covered.length} node(s)<br>
         Largest covered node: ${fmt(u.maxNodeRate)} ${S.params.unit}/day <span style="color:${u.capacitySufficient?'#8FE0B8':'#F2647A'}">(${u.capacitySufficient?'within capacity':'exceeds capacity'})</span><br>
         Configured response radius: <b>${fmt(S.params.hycasRadius,0)} mi</b><br>
@@ -2945,7 +2830,7 @@ function buildPresentationSVG(exportTheme){
   svg += `<text x="${sbX+18}" y="${sy}" font-size="12" font-weight="700" fill="${MUTED}">STAGING HUBS</text>`;
   sy += 26;
   hubs.slice(0,8).forEach(h=>{
-    const ref = h.cityRef ? `${h.cityRef.name}, ${h.cityRef.state}${h.townResolved?' · ~'+fmt(h.townOffsetMiles,0)+'mi from centroid':''}` : '';
+    const ref = h.cityRef ? `~${fmt(h.cityRef.dist,0)}mi from ${h.cityRef.name}, ${h.cityRef.state}` : '';
     svg += `<text x="${sbX+18}" y="${sy}" font-size="12.5" font-weight="700" fill="${TEXT}">Hub ${h.idx}</text>`;
     svg += `<text x="${sbX+sbW-18}" y="${sy}" font-size="12.5" fill="${NAVY}" text-anchor="end">${h.trailers} trailers</text>`;
     sy += 18;
@@ -3153,15 +3038,21 @@ function attachHandlers(){
     roadDistanceLastSignature = null; // force maybeRefreshRoadDistances to try again regardless of signature
     render();
   });
-  const btnRetryHydrogenData = document.getElementById('btnRetryHydrogenData');
-  if(btnRetryHydrogenData) btnRetryHydrogenData.addEventListener('click', ()=>{
-    publicHydrogenStatus = 'idle';
-    refreshPublicHydrogenStations();
-    render();
-  });
   document.querySelectorAll('.lnkRetryPlacementRoad').forEach(el=>el.addEventListener('click', (e)=>{
     e.preventDefault();
     placementRoadLastSignature = null; // force maybeRefreshPlacementRoadDistances to try again
+    render();
+  }));
+
+  const btnDistOverrideTemplate = document.getElementById('btnDistOverrideTemplate');
+  if(btnDistOverrideTemplate) btnDistOverrideTemplate.addEventListener('click', ()=>downloadTemplate('distanceOverrides'));
+  const btnDistOverrideImport = document.getElementById('btnDistOverrideImport');
+  if(btnDistOverrideImport) btnDistOverrideImport.addEventListener('click', ()=>document.getElementById('distOverrideCsvFile').click());
+  const distOverrideCsvFile = document.getElementById('distOverrideCsvFile');
+  if(distOverrideCsvFile) distOverrideCsvFile.addEventListener('change', (e)=>{ if(e.target.files[0]) importDistanceOverridesCSV(e.target.files[0]); e.target.value=''; });
+  document.querySelectorAll('[data-del-dist-override]').forEach(b=>b.addEventListener('click', ()=>{
+    const [nodeId, sourceId] = b.dataset.delDistOverride.split('|');
+    S.distanceOverrides = S.distanceOverrides.filter(x=>!(x.nodeId===nodeId && x.sourceId===sourceId));
     render();
   }));
 
@@ -3188,7 +3079,11 @@ function attachHandlers(){
 
   document.querySelectorAll('[data-edit-demand]').forEach(b=>b.addEventListener('click', ()=>{ S.demandForm=b.dataset.editDemand; render(); }));
   document.querySelectorAll('[data-del-demand]').forEach(b=>b.addEventListener('click', ()=>{
-    if(confirm('Delete this demand node?')){ S.demand = S.demand.filter(n=>n.id!==b.dataset.delDemand); render(); }
+    if(confirm('Delete this demand node?')){
+      S.demand = S.demand.filter(n=>n.id!==b.dataset.delDemand);
+      S.distanceOverrides = S.distanceOverrides.filter(o=>o.nodeId!==b.dataset.delDemand);
+      render();
+    }
   }));
 
   const btnDemandTemplate = document.getElementById('btnDemandTemplate');
@@ -3226,7 +3121,11 @@ function attachHandlers(){
 
   document.querySelectorAll('[data-edit-supply]').forEach(b=>b.addEventListener('click', ()=>{ S.supplyForm=b.dataset.editSupply; render(); }));
   document.querySelectorAll('[data-del-supply]').forEach(b=>b.addEventListener('click', ()=>{
-    if(confirm('Delete this supply source?')){ S.supply = S.supply.filter(n=>n.id!==b.dataset.delSupply); render(); }
+    if(confirm('Delete this supply source?')){
+      S.supply = S.supply.filter(n=>n.id!==b.dataset.delSupply);
+      S.distanceOverrides = S.distanceOverrides.filter(o=>o.sourceId!==b.dataset.delSupply);
+      render();
+    }
   }));
 
   const btnSupplyTemplate = document.getElementById('btnSupplyTemplate');
@@ -3500,7 +3399,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:400,costPerMile:3.25,avgSpeed:48,safetyDays:3,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000}, activeTab:'demand', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
+    S = { demand:[], supply:[], params:{trailerCap:750,costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000}, activeTab:'demand', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
     lastScenario = null;
     render();
   }
@@ -3519,8 +3418,8 @@ if(btnSaveScenarioTop) btnSaveScenarioTop.addEventListener('click', ()=>{
       kpi: lastComputed.kpi,
       hubs: lastComputed.hubs.map(h=>({
         hub: h.idx, proposedLat: h.lat, proposedLon: h.lon,
-        proposedTownCenter: h.cityRef ? `${h.cityRef.name}, ${h.cityRef.state}` : null,
-        centroidToTownCenterMiles: h.townResolved ? h.townOffsetMiles : null,
+        nearestReferenceCity: h.cityRef ? `${h.cityRef.name}, ${h.cityRef.state}` : null,
+        nearestReferenceDistMiles: h.cityRef ? h.cityRef.dist : null,
         nearestExistingFacility: h.nearestFacility ? h.nearestFacility.name : null,
         nearestExistingFacilityDistMiles: h.nearestFacilityDist,
         nodesCovered: h.covered.length, coverageDemand: h.coveredDemand,
@@ -3533,8 +3432,8 @@ if(btnSaveScenarioTop) btnSaveScenarioTop.addEventListener('click', ()=>{
       })),
       hycasUnits: (lastComputed.hycasUnits||[]).map(u=>({
         unit: u.idx, proposedLat: u.lat, proposedLon: u.lon,
-        proposedTownCenter: u.cityRef ? `${u.cityRef.name}, ${u.cityRef.state}` : null,
-        centroidToTownCenterMiles: u.townResolved ? u.townOffsetMiles : null,
+        nearestReferenceCity: u.cityRef ? `${u.cityRef.name}, ${u.cityRef.state}` : null,
+        nearestReferenceDistMiles: u.cityRef ? u.cityRef.dist : null,
         nearestExistingFacility: u.nearestFacility ? u.nearestFacility.name : null,
         nearestExistingFacilityDistMiles: u.nearestFacilityDist,
         nodesCovered: u.covered.length,
@@ -3570,7 +3469,7 @@ function applyScenarioFile(file, onDone){
     try{
       const data = JSON.parse(ev.target.result);
       if(!Array.isArray(data.demand) || !Array.isArray(data.supply)) throw new Error('File does not look like a saved scenario (missing demand/supply arrays).');
-      const defaults = {trailerCap:400,costPerMile:3.25,avgSpeed:48,safetyDays:3,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000};
+      const defaults = {trailerCap:750,costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000};
       S.demand = data.demand.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), rate:parseFloat(n.rate), safetyDays:parseFloat(n.safetyDays)||defaults.safetyDays }));
       S.supply = data.supply.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), capacity:parseFloat(n.capacity), cost:parseFloat(n.cost), status:(n.status==='future'?'future':'current') }));
       S.params = Object.assign({}, defaults, data.params||{});
@@ -3606,11 +3505,11 @@ if(btnExportTop) btnExportTop.addEventListener('click', ()=>{
       csv += `"${n.name}","${src.name}",${(src.status||'current')==='future'?'Planned':'Current'},${f.dist.toFixed(1)},"${fmtHours(f.hours)}",${f.isReal?'Road':'Straight-line'},${f.amt.toFixed(1)},${f.trips},${f.effectiveLanded.toFixed(3)},${f.totalCost.toFixed(2)}\n`;
     });
   });
-  csv += '\nRESILIENCY PLAN\nHub,Proposed Lat,Proposed Lon,Proposed Town,Proposed State,Centroid to Town Center (mi),Nearest Existing Facility,Nearest Facility Distance (mi),Nodes Covered,Coverage Demand,Avg Reach (mi),Avg Reach Time,Max Reach (mi),Max Reach Time,Trailers,Fill Source,Fill Source Distance (mi),Cost Per Trailer,One-Time Staging Cost\n';
+  csv += '\nRESILIENCY PLAN\nHub,Proposed Lat,Proposed Lon,Proposed City,Proposed State,Distance from City Center (mi),Nearest Existing Facility,Nearest Facility Distance (mi),Nodes Covered,Coverage Demand,Avg Reach (mi),Avg Reach Time,Max Reach (mi),Max Reach Time,Trailers,Fill Source,Fill Source Distance (mi),Cost Per Trailer,One-Time Staging Cost\n';
   hubs.forEach(h=>{
     csv += `Hub ${h.idx},${h.lat.toFixed(4)},${h.lon.toFixed(4)},"${h.cityRef?h.cityRef.name:''}","${h.cityRef?h.cityRef.state:''}",${h.cityRef?h.cityRef.dist.toFixed(1):''},"${h.nearestFacility?h.nearestFacility.name:''}",${h.nearestFacility?h.nearestFacilityDist.toFixed(1):''},${h.covered.length},${h.coveredDemand.toFixed(1)},${h.avgDist.toFixed(1)},"${fmtHours(h.avgHours)}",${h.maxDist.toFixed(1)},"${fmtHours(h.maxHours)}",${h.trailers},"${h.stagingSource?h.stagingSource.name:''}",${h.stagingSource?h.stagingSourceDist.toFixed(1):''},${h.costPerTrailer.toFixed(2)},${h.stagingCost.toFixed(2)}\n`;
   });
-  csv += '\nMOBILE HyCAS PLACEMENT PLAN\nUnit,Proposed Lat,Proposed Lon,Proposed Town,Proposed State,Centroid to Town Center (mi),Nearest Existing Facility,Nearest Facility Distance (mi),Nodes Covered,Avg Reach (mi),Avg Reach Time,Max Reach (mi),Max Reach Time,Largest Covered Node Rate,Capacity Sufficient\n';
+  csv += '\nMOBILE HyCAS PLACEMENT PLAN\nUnit,Proposed Lat,Proposed Lon,Proposed City,Proposed State,Distance from City Center (mi),Nearest Existing Facility,Nearest Facility Distance (mi),Nodes Covered,Avg Reach (mi),Avg Reach Time,Max Reach (mi),Max Reach Time,Largest Covered Node Rate,Capacity Sufficient\n';
   (hycasUnits||[]).forEach(u=>{
     csv += `Unit ${u.idx},${u.lat.toFixed(4)},${u.lon.toFixed(4)},"${u.cityRef?u.cityRef.name:''}","${u.cityRef?u.cityRef.state:''}",${u.cityRef?u.cityRef.dist.toFixed(1):''},"${u.nearestFacility?u.nearestFacility.name:''}",${u.nearestFacility?u.nearestFacilityDist.toFixed(1):''},${u.covered.length},${u.avgDist.toFixed(1)},"${fmtHours(u.avgHours)}",${u.maxDist.toFixed(1)},"${fmtHours(u.maxHours)}",${u.maxNodeRate.toFixed(1)},${u.capacitySufficient?'Yes':'No'}\n`;
   });
