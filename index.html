@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HyWeave build: 2026-07-26-calculation-ready-banner-1 -->
+<!-- HyWeave build: 2026-07-27-multi-trailer-asset-recommendations-1 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -67,8 +67,8 @@
   .btn-outline{background:var(--btn-outline-bg);color:var(--heading);border:1px solid var(--border);}
   .btn-outline:hover{background:var(--btn-outline-hover);}
 
-  nav.tabs{display:flex;gap:2px;background:var(--panel);border-bottom:1px solid var(--border);padding:0 20px;flex-shrink:0;}
-  nav.tabs button{background:none;border:none;padding:12px 16px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;}
+  nav.tabs{display:flex;gap:2px;background:var(--panel);border-bottom:1px solid var(--border);padding:0 20px;flex-shrink:0;overflow-x:auto;}
+  nav.tabs button{background:none;border:none;padding:12px 16px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;}
   nav.tabs button.active{color:var(--blue);border-bottom-color:var(--blue);}
   nav.tabs button .count{background:var(--hover);color:var(--muted);border-radius:10px;padding:1px 7px;font-size:10.5px;margin-left:6px;}
   nav.tabs button.active .count{background:var(--hover);color:var(--blue);}
@@ -190,6 +190,8 @@
     <button data-tab="demand">Demand Nodes <span class="count" id="cntDemand">0</span></button>
     <button data-tab="results">Optimization Results</button>
     <button data-tab="assets">Asset Placement</button>
+    <button data-tab="asset-results">Asset Placement Recommendation</button>
+    <button data-tab="realestate">Real Estate Assets</button>
     <!-- PORTAL_BLOCK_END -->
     <button data-tab="scenario" class="">Scenario Planning</button>
     <!-- PRICING_BLOCK_START -->
@@ -510,6 +512,9 @@ function downloadTemplate(kind){
     });
     csv = rows.join('\n') + '\n';
     filename = 'distance_overrides_template.csv';
+  } else if(kind==='realestate'){
+    csv = 'name,street address,city,state,postal code,acreage,description\n1108 - Marlboro, MA - 100 Cedar Hill Street,100 Cedar Hill Street,Marlboro,MA,01752,3.70,Office/Plant\n';
+    filename = 'real_estate_properties_template.csv';
   } else {
     csv = 'name,city,lat,lon,capacity,cost,status\nExample Source,"Baytown, TX",29.7355,-94.9774,2000,2.10,current\n';
     filename = 'supply_sources_template.csv';
@@ -632,13 +637,15 @@ function importAssetCSV(file){
 let S = {
   demand: [],
   supply: [],
-  params: { trailerCap:750, costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 },
+  params: { trailerCap:750, trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}], costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000, hycasHasOnboardStorage: false, hycasStorageCapacity: 500, },
   activeTab: 'params',
   demandForm: null, // editing id or null
   supplyForm: null,
   scenarioSourceIds: [], scenarioNodeIds: [], scenarioDays: 3, scenarioTurnaround: 2, notifyEmail: '',
   showTrailerRadius: true, showHycasRadius: true,
   assets: [], assetForm: null,
+  realEstate: [], showRealEstateOverlay: true,
+  exportBranding: { companyLogo: null, companyLogoName: '', customerLogo: null, customerLogoName: '', customerName: '' },
   assetPlacement: { safetyDays:3, targetRadius:400, targetHours:6 },
   distanceOverrides: [],
   pricing: { mode:'buy', trailerPrice: 50000, hycasPrice: 250000, nodePrice: 0,
@@ -659,6 +666,7 @@ const NOTIFY_FALLBACK_TEXT = 'Please contact your operations team directly.';
 const ROUTE_ENDPOINT_URL = '/.netlify/functions/route-distance';
 const HYDROGEN_DATA_ENDPOINT_URL = '/.netlify/functions/hydrogen-stations';
 const TOWN_CENTER_ENDPOINT_URL = '/.netlify/functions/town-centers';
+const GEOCODE_ENDPOINT_URL = '/.netlify/functions/geocode-addresses';
 
 // Reverse-geocoded town centers for final placement centroids. The lookup runs through a
 // Netlify function so the ORS key remains private. Until a lookup completes, the calculated
@@ -731,6 +739,94 @@ async function refreshTownCenters(points){
 function maybeRefreshTownCenters(locations){
   if(!TOWN_CENTER_ENDPOINT_URL || !locations.length) return;
   refreshTownCenters(locations);
+}
+
+// Real Estate Assets: addresses come in with no coordinates at all, so each one needs a real
+// forward-geocode lookup before it can go on a map or be compared to anything. Deliberately
+// NOT auto-triggered on render like the road-distance/town-center refreshes elsewhere -- a
+// property list can run into the hundreds, and ORS's geocoding free tier (1,000/day) doesn't
+// have the headroom to re-attempt automatically the way the low-volume routing lookups do.
+// Only runs when explicitly started (see btnGeocodeRealEstate), and only on rows still pending.
+let realEstateGeocodeStatus = 'idle'; // idle | running | done | error
+let realEstateGeocodeError = '';
+let realEstateGeocodeProgress = {done:0, total:0};
+
+async function refreshRealEstateGeocoding(){
+  if(!GEOCODE_ENDPOINT_URL){ realEstateGeocodeStatus='error'; realEstateGeocodeError='Geocoding backend not configured'; setTimeout(render,0); return; }
+  if(realEstateGeocodeStatus==='running') return;
+  const pending = S.realEstate.filter(a=>a.geocodeStatus==='pending');
+  if(!pending.length) return;
+  realEstateGeocodeStatus = 'running';
+  realEstateGeocodeProgress = {done:0, total:pending.length};
+  setTimeout(render, 0);
+  const BATCH = 40; // stays under the backend's own 60-per-call cap with room to spare
+  try{
+    for(let i=0;i<pending.length;i+=BATCH){
+      const batch = pending.slice(i, i+BATCH);
+      const resp = await fetch(GEOCODE_ENDPOINT_URL, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({items: batch.map(a=>({key:a.id, address:a.streetAddress, city:a.city, state:a.state, postalCode:a.postalCode}))}),
+      });
+      if(!resp.ok) throw new Error(await resp.text().catch(()=>'') || `Request failed (${resp.status})`);
+      const data = await resp.json();
+      const byKey = new Map((data.results||[]).map(r=>[r.key,r]));
+      batch.forEach(a=>{
+        const result = byKey.get(a.id);
+        const asset = S.realEstate.find(x=>x.id===a.id);
+        if(!asset) return;
+        if(result && result.found){ asset.lat=result.lat; asset.lon=result.lon; asset.geocodeStatus='geocoded'; asset.matchLabel=result.matchLabel||''; }
+        else { asset.geocodeStatus='error'; }
+      });
+      realEstateGeocodeProgress = {done:Math.min(i+BATCH,pending.length), total:pending.length};
+      setTimeout(render, 0); // show progress as each batch lands, not just at the very end
+    }
+    realEstateGeocodeStatus = 'done';
+    realEstateGeocodeError = '';
+  } catch(err){
+    realEstateGeocodeStatus = 'error';
+    realEstateGeocodeError = err.message;
+  }
+  setTimeout(render, 0);
+}
+
+// Distance from every geocoded property to every currently-recommended hub, via the same
+// override -> live-routing -> straight-line hierarchy (and the same shared placementRoadCache)
+// used everywhere else in the app. Batches the property list so one very large portfolio
+// doesn't become one enormous request. Uses the existing guarded wrapper (not the raw fetch
+// function) so each batch's distinct signature is tracked independently -- safe to call on
+// every render() without re-attempting batches that already succeeded or already failed.
+function refreshRealEstateHubDistances(){
+  if(!lastComputed || !lastComputed.hubs || !lastComputed.hubs.length) return;
+  const geocoded = S.realEstate.filter(a=>a.geocodeStatus==='geocoded');
+  if(!geocoded.length) return;
+  const BATCH = 60;
+  for(let i=0;i<geocoded.length;i+=BATCH){
+    const batch = geocoded.slice(i, i+BATCH);
+    const locations = lastComputed.hubs.map(h=>({lat:h.lat, lon:h.lon, covered:batch}));
+    maybeRefreshPlacementRoadDistances(locations);
+  }
+}
+
+function realEstateDistanceBand(miles){
+  if(miles<=5) return '\u2264 5 mi';
+  if(miles<=10) return '\u2264 10 mi';
+  if(miles<=25) return '\u2264 25 mi';
+  return '> 25 mi';
+}
+
+// For every geocoded property, the nearest currently-recommended hub and the distance to it --
+// real routing where cached (see refreshRealEstateHubDistances above), straight-line otherwise.
+function computeRealEstateProximity(){
+  if(!lastComputed || !lastComputed.hubs || !lastComputed.hubs.length) return [];
+  return S.realEstate.filter(a=>a.geocodeStatus==='geocoded').map(a=>{
+    let best=null, bestDist=Infinity, bestHours=0, bestReal=false;
+    lastComputed.hubs.forEach(h=>{
+      const pd = placementReachDistance(h.lat, h.lon, {id:a.id, lat:a.lat, lon:a.lon});
+      if(pd.dist<bestDist){ bestDist=pd.dist; bestHours=pd.hours; bestReal=pd.isReal; best=h; }
+    });
+    return { asset:a, hub:best, dist:bestDist, hours:bestHours, isReal:bestReal, band:realEstateDistanceBand(bestDist) };
+  }).sort((x,y)=>x.dist-y.dist);
 }
 
 // Public hydrogen infrastructure from NREL/AFDC. API credentials stay in the Netlify function;
@@ -1035,6 +1131,7 @@ function applyTheme(theme){
   THEME = theme;
   document.documentElement.setAttribute('data-theme', theme);
   if(S.activeTab==='results' && lastComputed) drawMap();
+  if(S.activeTab==='asset-results' && lastAssetPlacementComputed) drawAssetRecommendationMap();
 }
 
 function sampleData(){
@@ -1057,7 +1154,7 @@ function sampleData(){
     {id:uid(), name:'Oklahoma City Regional Fill', city:'Oklahoma City, OK', lat:35.4676, lon:-97.5164, capacity:700, cost:2.60, status:'current'},
     {id:uid(), name:'Planned Beaumont H2 Plant (2027)', city:'Beaumont, TX', lat:30.0802, lon:-94.1266, capacity:1500, cost:2.05, status:'future'},
   ];
-  S.params = { trailerCap:750, costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000 };
+  S.params = { trailerCap:750, trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}], costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000, hycasHasOnboardStorage:false, hycasStorageCapacity:500 };
 }
 
 /* ===================== OPTIMIZATION ===================== */
@@ -1067,6 +1164,95 @@ function sampleData(){
 // re-runs sourcing/hub placement as if those planned sources didn't exist yet.
 function activeSupply(){
   return S.supply.filter(s => (s.status||'current')!=='future' || S.params.includeFuture);
+}
+
+// Flattens both pressure-type lists into a single array of {key, label, capacity} entries --
+// one per enabled, positive-capacity row the user has entered, however many that is.
+function activeTrailerTypes(){
+  const list = Array.isArray(S.params.trailerCapacities) ? S.params.trailerCapacities : [];
+  const types = list
+    .filter(t=>t && (t.pressure==='high'||t.pressure==='low') && Number(t.capacity)>0)
+    .map((t,i)=>({ key:`${t.pressure}-${i}`, label:t.pressure==='high'?'High Pressure':'Low Pressure', capacity:Number(t.capacity) }));
+  if(types.length) return types;
+  return [{key:'high-0', label:'High Pressure', capacity:Number(S.params.trailerCap)||750}];
+}
+
+// Greedy fallback for very large volumes where the DP table below would be too large to be
+// worth it -- always take the biggest available capacity, then handle the remainder with
+// whichever capacity fits it best. Not guaranteed minimal like the DP path, but close in
+// practice and O(types) instead of O(volume x types).
+// Every node requires high-pressure-capable delivery. Rather than tracking refuelers as a
+// limited resource, they're assumed available wherever needed: any Low Pressure trailer in a
+// plan is paired 1:1 with a Mobile Refueler on arrival, which is what actually makes that
+// trailer's delivery satisfy the high-pressure requirement. This means trailer selection itself
+// never needs to treat pressure as a constraint -- the model is free to pick whichever mix of
+// capacities is cheapest, and the refueler count is simply derived from however many Low
+// Pressure trailers that mix happens to use.
+function mobileRefuelerCountFor(counts){
+  return Object.entries(counts).reduce((sum,[key,n]) => key.startsWith('low-') ? sum+n : sum, 0);
+}
+function withRefuelerInfo(plan){
+  const mobileRefuelerCount = mobileRefuelerCountFor(plan.counts);
+  const label = mobileRefuelerCount>0 ? `${plan.label} + ${mobileRefuelerCount} Mobile Refueler${mobileRefuelerCount===1?'':'s'}` : plan.label;
+  return {...plan, mobileRefuelerCount, label};
+}
+
+function greedyTrailerPlan(types, need){
+  const sorted = [...types].sort((a,b)=>b.capacity-a.capacity);
+  const big = sorted[0];
+  const count = Math.ceil(need/big.capacity);
+  const counts = {[big.key]:count};
+  const totalCapacity = count*big.capacity;
+  return withRefuelerInfo({count, totalCapacity, unusedCapacity:totalCapacity-need, counts, label:`${count} ${big.label} (${fmt(big.capacity)} ${S.params.unit})`});
+}
+
+// Chooses the fewest trailers (any mix of however many capacities are currently enabled across
+// both pressure types) that can carry the requested volume, breaking ties by least unused
+// capacity. Unlimited supply of each enabled capacity is assumed. Solved as a bounded
+// "at-least-cover" dynamic program: minCount[v] = minimum trailers to reach >= v, so
+// minCount[need] is the answer and backtracking through `choice` recovers which capacities
+// were used. This generalizes cleanly to any number of user-entered capacities, not just two.
+function trailerPlanForVolume(volume){
+  const need = Math.max(0, Math.ceil(Number(volume)||0));
+  if(need===0) return {count:0,totalCapacity:0,unusedCapacity:0,counts:{},mobileRefuelerCount:0,label:'—'};
+  const types = activeTrailerTypes();
+  if(types.length===1){
+    const count=Math.ceil(need/types[0].capacity);
+    const counts={[types[0].key]:count};
+    return withRefuelerInfo({count,totalCapacity:count*types[0].capacity,unusedCapacity:count*types[0].capacity-need,counts,label:`${count} ${types[0].label} (${fmt(types[0].capacity)} ${S.params.unit})`});
+  }
+  if(need>200000) return greedyTrailerPlan(types, need); // keep the DP table bounded/fast
+
+  const minCount = new Array(need+1).fill(Infinity);
+  const minCapacity = new Array(need+1).fill(Infinity); // total capacity of the best (fewest-trailer) solution at this v -- the real tiebreaker
+  const choice = new Array(need+1).fill(-1);
+  minCount[0] = 0; minCapacity[0] = 0;
+  for(let v=1; v<=need; v++){
+    for(let i=0;i<types.length;i++){
+      const prev = Math.max(0, v-types[i].capacity);
+      const candCount = minCount[prev]+1;
+      const candCapacity = minCapacity[prev]+types[i].capacity;
+      if(candCount < minCount[v] || (candCount===minCount[v] && candCapacity < minCapacity[v])){
+        minCount[v] = candCount;
+        minCapacity[v] = candCapacity;
+        choice[v] = i;
+      }
+    }
+  }
+  const counts = {};
+  let v = need, totalCapacity = 0;
+  while(v>0){
+    const t = types[choice[v]];
+    counts[t.key] = (counts[t.key]||0)+1;
+    totalCapacity += t.capacity;
+    v = Math.max(0, v-t.capacity);
+  }
+  const label = types.filter(t=>counts[t.key]).map(t=>`${counts[t.key]} ${t.label} (${fmt(t.capacity)} ${S.params.unit})`).join(' + ');
+  return withRefuelerInfo({count:minCount[need], totalCapacity, unusedCapacity:totalCapacity-need, counts, label});
+}
+
+function largestTrailerCapacity(){
+  return Math.max(...activeTrailerTypes().map(t=>t.capacity));
 }
 
 function computeSourcing(){
@@ -1100,11 +1286,12 @@ function computeSourcing(){
         const p=pairByLane.get(n.id+'|'+s.id);
         if(!p) return;
         const amt=Math.min(remDemand[n.id],remCap[s.id]);
-        const trips=Math.ceil(amt/S.params.trailerCap);
+        const trailerPlan=trailerPlanForVolume(amt);
+        const trips=trailerPlan.count;
         const transportCost=trips*S.params.costPerMile*p.dist;
         const sourceCost=amt*s.cost;
         const totalCost=sourceCost+transportCost;
-        options.push({...p,amt,trips,transportCost,sourceCost,totalCost,effectiveLanded:totalCost/amt});
+        options.push({...p,amt,trips,trailerPlan,transportCost,sourceCost,totalCost,effectiveLanded:totalCost/amt});
       });
       if(!options.length) return;
       options.sort((a,b)=>a.effectiveLanded-b.effectiveLanded || a.dist-b.dist);
@@ -1385,8 +1572,9 @@ function buildHubsForK(baseRisk, k){
     const avgDist = dists.length? dists.reduce((a,b)=>a+b,0)/dists.length : 0;
     const maxDist = dists.length? Math.max(...dists) : 0;
     const avgSafety = covered.length? covered.reduce((a,n)=>a+n.safetyDays,0)/covered.length : S.params.safetyDays;
-    // trailers are always dispatched full — round up to whole trailer loads, never a fractional trailer
-    const trailers = Math.ceil((coveredDemand*avgSafety)/S.params.trailerCap) || 0;
+    // Select the smallest feasible combination of enabled low-/high-pressure trailer types.
+    const trailerPlan = trailerPlanForVolume(coveredDemand*avgSafety);
+    const trailers = trailerPlan.count;
 
     // One-time cost to fill and stage this hub's trailers: cheapest active source that could fill
     // and deliver each one (not capacity-constrained — this is a one-time build-out, not a daily
@@ -1395,8 +1583,9 @@ function buildHubsForK(baseRisk, k){
     let stagingSource=null, stagingSourceDist=Infinity, costPerTrailer=0;
     activeSupply().forEach(s=>{
       const d = haversineMiles(cLat,cLon,s.lat,s.lon);
-      const perTrailer = S.params.trailerCap*s.cost + S.params.costPerMile*d;
-      if(stagingSource===null || perTrailer<costPerTrailer){
+      const planCost = trailerPlan.totalCapacity*s.cost + trailers*S.params.costPerMile*d;
+      const perTrailer = trailers?planCost/trailers:0;
+      if(stagingSource===null || planCost<trailers*costPerTrailer){
         stagingSource=s; stagingSourceDist=d; costPerTrailer=perTrailer;
       }
     });
@@ -1406,7 +1595,7 @@ function buildHubsForK(baseRisk, k){
       idx: ci+1, lat:cLat, lon:cLon, centroidLat:site.centroidLat, centroidLon:site.centroidLon,
       townResolved:site.townResolved, townOffsetMiles:site.townOffsetMiles,
       cityRef, nearestFacility, nearestFacilityDist:bestD,
-      covered, coveredDemand, avgDist, maxDist, trailers,
+      covered, coveredDemand, avgDist, maxDist, trailers, trailerPlan,
       avgHours: avgDist/S.params.avgSpeed, maxHours: maxDist/S.params.avgSpeed,
       stagingSource, stagingSourceDist, costPerTrailer, stagingCost,
     };
@@ -1436,12 +1625,14 @@ function buildHubsFromSelectedSites(selectedSites){
     const avgDist=dists.reduce((a,b)=>a+b,0)/dists.length;
     const maxDist=Math.max(...dists);
     const avgSafety=covered.reduce((a,n)=>a+n.safetyDays,0)/covered.length;
-    const trailers=Math.ceil((coveredDemand*avgSafety)/S.params.trailerCap)||0;
+    const trailerPlan=trailerPlanForVolume(coveredDemand*avgSafety);
+    const trailers=trailerPlan.count;
     let stagingSource=null,stagingSourceDist=Infinity,costPerTrailer=0;
     activeSupply().forEach(s=>{
       const d=haversineMiles(cLat,cLon,s.lat,s.lon);
-      const cost=S.params.trailerCap*s.cost+S.params.costPerMile*d;
-      if(stagingSource===null||cost<costPerTrailer){
+      const planCost=trailerPlan.totalCapacity*s.cost+trailers*S.params.costPerMile*d;
+      const cost=trailers?planCost/trailers:0;
+      if(stagingSource===null||planCost<trailers*costPerTrailer){
         stagingSource=s;stagingSourceDist=d;costPerTrailer=cost;
       }
     });
@@ -1449,7 +1640,7 @@ function buildHubsFromSelectedSites(selectedSites){
       idx:ci+1,lat:cLat,lon:cLon,centroidLat:cLat,centroidLon:cLon,
       townResolved:true,townOffsetMiles:0,cityRef,
       nearestFacility:nearest.facility,nearestFacilityDist:nearest.dist,
-      covered,coveredDemand,avgDist,maxDist,trailers,
+      covered,coveredDemand,avgDist,maxDist,trailers,trailerPlan,
       avgHours:avgDist/S.params.avgSpeed,maxHours:maxDist/S.params.avgSpeed,
       stagingSource,stagingSourceDist,costPerTrailer,stagingCost:trailers*costPerTrailer,
       candidateType:site.type,candidateId:site.id,
@@ -1787,14 +1978,14 @@ function computeScenario(sourceIds, nodeIds, outageDays, turnaroundHours){
     let bestAlt=null, bestAltDist=0, bestAltLanded=Infinity, bestAltHours=0;
     altSupply.forEach(s=>{
       const nd = nodeSourceDistance(n, s);
-      const landed = s.cost + (S.params.costPerMile*nd.dist)/S.params.trailerCap;
+      const landed = s.cost + (S.params.costPerMile*nd.dist)/largestTrailerCapacity();
       if(landed<bestAltLanded){ bestAltLanded=landed; bestAlt=s; bestAltDist=nd.dist; bestAltHours=nd.hours; }
     });
     const altHours = bestAlt ? bestAltHours : null;
     const refillCycleHours = bestAlt ? (2*altHours + turnaroundHours) : null;
-    const maxSustainRate = (bestAlt && refillCycleHours>0) ? S.params.trailerCap/(refillCycleHours/24) : 0;
+    const maxSustainRate = (bestAlt && refillCycleHours>0) ? largestTrailerCapacity()/(refillCycleHours/24) : 0;
     const shuttleSufficient = bestAlt ? maxSustainRate >= n.rate : false;
-    const trailersNeededAlone = Math.ceil((n.rate*outageDays)/S.params.trailerCap);
+    const trailersNeededAlone = trailerPlanForVolume(n.rate*outageDays).count;
 
     return {
       node:n, hub, reasons, bestAlt, bestAltDist, altHours, refillCycleHours, maxSustainRate, shuttleSufficient,
@@ -1812,7 +2003,7 @@ function computeScenario(sourceIds, nodeIds, outageDays, turnaroundHours){
   const hubRollups = Object.values(groups).map(g=>{
     const totalAffectedDemand = g.nodes.reduce((a,nr)=>a+nr.node.rate,0);
     const totalNeedOverOutage = totalAffectedDemand*outageDays;
-    const bufferAvailable = g.hub ? g.hub.trailers*S.params.trailerCap : 0;
+    const bufferAvailable = g.hub ? (g.hub.trailerPlan?g.hub.trailerPlan.totalCapacity:g.hub.trailers*largestTrailerCapacity()) : 0;
     const bufferDaysCovered = totalAffectedDemand>0 ? bufferAvailable/totalAffectedDemand : Infinity;
     const bufferSufficient = bufferAvailable >= totalNeedOverOutage;
     const allShuttlesSufficient = g.nodes.every(nr=>nr.shuttleSufficient);
@@ -1904,7 +2095,7 @@ function computePricingBase(){
 }
 
 function trailersForDaySupply(hubs, days){
-  return hubs.reduce((total,h)=> total + (Math.ceil((h.coveredDemand*days)/S.params.trailerCap)||0), 0);
+  return hubs.reduce((total,h)=> total + trailerPlanForVolume(h.coveredDemand*days).count, 0);
 }
 
 function parseTierDays(tierStr){
@@ -2004,10 +2195,35 @@ function classifyInputRows(rows, label=''){
   if(!rows.length) return null;
   const keys = Object.keys(rows[0]).map(k=>k.toLowerCase());
   const hint = label.toLowerCase();
+  if(hint.includes('propert') || hint.includes('real estate') ||
+    (keys.some(k=>k==='street address'||k==='street_address'||k==='address') && keys.some(k=>k==='postal code'||k==='postal_code'||k==='zip'||k==='zip code'))) return 'realestate';
+  if(hint.includes('asset') || keys.some(k=>k==='asset type'||k==='asset_type') ||
+    (keys.includes('type')&&keys.includes('capacity')&&!keys.some(k=>k==='lat'||k==='latitude'))) return 'asset';
   if(hint.includes('discount') || hint.includes('pricing') || keys.some(k=>k.includes('discount'))) return 'pricing';
   if(hint.includes('supply') || keys.some(k=>k==='capacity'||k==='fill capacity'||k==='fill_capacity')) return 'supply';
   if(hint.includes('demand') || keys.some(k=>k==='rate'||k.includes('consumption'))) return 'demand';
   return null;
+}
+function addRealEstateRows(objs){
+  let added=0; const errors=[];
+  objs.forEach((o,idx)=>{
+    const name=pick(o,['name','property name','property_name']);
+    const streetAddress=pick(o,['street address','street_address','address']);
+    const city=pick(o,['city']);
+    const state=pick(o,['state']);
+    const postalCode=pick(o,['postal code','postal_code','zip','zip code','zipcode']);
+    if(!name||!streetAddress||!city||!state){ errors.push(`row ${idx+2}`); return; }
+    const acreageRaw = pick(o,['acreage','acres']);
+    const acreage = acreageRaw!==undefined && acreageRaw!=='' ? parseFloat(acreageRaw) : null;
+    S.realEstate.push({
+      id: uid(), name, streetAddress, city, state, postalCode: postalCode||'',
+      acreage: isNaN(acreage)?null:acreage,
+      description: pick(o,['description'])||'',
+      lat: null, lon: null, geocodeStatus: 'pending', matchLabel: '',
+    });
+    added++;
+  });
+  return {added,errors};
 }
 function addDemandRows(objs){
   let added=0; const errors=[];
@@ -2035,6 +2251,18 @@ function addSupplyRows(objs){
   });
   return {added,errors};
 }
+function addAssetRows(objs){
+  let added=0; const errors=[];
+  objs.forEach((o,idx)=>{
+    const name=pick(o,['name','asset name','asset_name']);
+    const capacity=parseFloat(pick(o,['capacity']));
+    const raw=(pick(o,['type','asset type','asset_type'])||'').toLowerCase().trim();
+    const type=raw==='storage'||raw.includes('storage')?'storage':raw==='compression'||raw.includes('compress')?'compression':null;
+    if(!name||!type||isNaN(capacity)||capacity<=0){errors.push(`row ${idx+2}`);return;}
+    S.assets.push({id:uid(),name,type,capacity});added++;
+  });
+  return {added,errors};
+}
 function rowsFromSheet(sheet){
   return XLSX.utils.sheet_to_json(sheet,{defval:''}).map(r=>{
     const lower={}; Object.keys(r).forEach(k=>{lower[k.toString().trim().toLowerCase()]=r[k];}); return lower;
@@ -2042,7 +2270,7 @@ function rowsFromSheet(sheet){
 }
 async function importMasterFiles(files){
   if(S.activeTab==='params') commitParamsForm();
-  const totals={demand:0,supply:0,pricing:0,skipped:0}; const messages=[];
+  const totals={demand:0,supply:0,asset:0,pricing:0,realestate:0,skipped:0}; const messages=[];
   for(const file of files){
     try{
       const lower=file.name.toLowerCase();
@@ -2061,17 +2289,19 @@ async function importMasterFiles(files){
         recognized=true;
         if(kind==='demand'){ const r=addDemandRows(set.rows); totals.demand+=r.added; if(r.errors.length) messages.push(`${set.label}: ${r.errors.length} demand row(s) skipped`); }
         if(kind==='supply'){ const r=addSupplyRows(set.rows); totals.supply+=r.added; if(r.errors.length) messages.push(`${set.label}: ${r.errors.length} supply row(s) skipped`); }
+        if(kind==='asset'){ const r=addAssetRows(set.rows); totals.asset+=r.added; if(r.errors.length) messages.push(`${set.label}: ${r.errors.length} asset row(s) skipped`); }
+        if(kind==='realestate'){ const r=addRealEstateRows(set.rows); totals.realestate+=r.added; if(r.errors.length) messages.push(`${set.label}: ${r.errors.length} property row(s) skipped`); }
         if(kind==='pricing'){
           const r=normalizeDiscountRows(set.rows);
           if(r.rows.length){ S.pricing.volumeDiscounts=r.rows; totals.pricing+=r.rows.length; }
           if(r.errors.length) messages.push(`${set.label}: ${r.errors.length} pricing row(s) skipped`);
         }
       });
-      if(!recognized) messages.push(`${file.name}: could not identify Demand, Supply, or Pricing columns`);
+      if(!recognized) messages.push(`${file.name}: could not identify Demand, Supply, Asset, or Pricing columns`);
     }catch(error){ messages.push(`${file.name}: ${error.message}`); }
   }
   roadDistanceLastSignature=null; placementRoadLastSignature=null; render();
-  alert(`Input import complete\n\nDemand nodes added: ${totals.demand}\nSupply sources added: ${totals.supply}\nPricing brackets loaded: ${totals.pricing}`+
+  alert(`Input import complete\n\nDemand nodes added: ${totals.demand}\nSupply sources added: ${totals.supply}\nAssets added: ${totals.asset}\nProperties added: ${totals.realestate}\nPricing brackets loaded: ${totals.pricing}`+
     (messages.length?`\n\nNotes:\n${messages.slice(0,12).join('\n')}`:''));
 }
 /* PRICING_BLOCK_END */
@@ -2092,6 +2322,8 @@ function render(){
   else if(S.activeTab==='supply') main.innerHTML = renderSupplyTab();
   else if(S.activeTab==='params') main.innerHTML = renderParamsTab();
   else if(S.activeTab==='assets') main.innerHTML = renderAssetPlacementTab();
+  else if(S.activeTab==='asset-results') main.innerHTML = renderAssetPlacementRecommendationTab();
+  else if(S.activeTab==='realestate'){ main.innerHTML = renderRealEstateTab(); if(lastComputed) refreshRealEstateHubDistances(); }
   else if(S.activeTab==='scenario') main.innerHTML = renderScenarioTab();
   /* PRICING_BLOCK_START */
   else if(S.activeTab==='pricing') main.innerHTML = renderPricingTab();
@@ -2237,15 +2469,39 @@ function renderSupplyTab(){
 }
 
 /* ===================== RENDER: PARAMS TAB ===================== */
+// Renders the unified trailer capacity table -- one row per capacity you've entered, plus one
+// trailing blank row always ready for the next entry. High Pressure and Low Pressure are
+// columns, not separate lists: checking one classifies that row's capacity and is mutually
+// exclusive with the other column on the same row (see the trailerPressureCheck click handler).
+// Filling in the blank row's capacity field and blurring it appends a new blank row after it,
+// so the table grows on demand rather than needing an explicit "add" button.
+function trailerCapacityTableHtml(entries){
+  const list = Array.isArray(entries) ? entries : [];
+  const rows = [...list, null]; // null = the always-present blank row at the end
+  return `
+    <table style="max-width:420px">
+      <thead><tr><th>Trailer Capacity</th><th style="text-align:center">High Pressure</th><th style="text-align:center">Low Pressure</th><th></th></tr></thead>
+      <tbody>
+        ${rows.map((entry,i)=>`
+        <tr>
+          <td><input class="trailerCapField" data-idx="${i}" type="number" min="1" step="10" placeholder="Capacity (${S.params.unit})" value="${entry&&entry.capacity!=null?entry.capacity:''}" style="width:130px"></td>
+          <td style="text-align:center"><input class="trailerPressureCheck" data-idx="${i}" data-pressure="high" type="checkbox" ${entry&&entry.pressure==='high'?'checked':''} style="width:16px;height:16px;cursor:pointer"></td>
+          <td style="text-align:center"><input class="trailerPressureCheck" data-idx="${i}" data-pressure="low" type="checkbox" ${entry&&entry.pressure==='low'?'checked':''} style="width:16px;height:16px;cursor:pointer"></td>
+          <td>${i<list.length?`<a href="#" class="lnkRemoveTrailerCap" data-idx="${i}" style="font-size:11px;color:var(--red)">Remove</a>`:''}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
 function renderParamsTab(){
   const p = S.params;
   return `
   <div class="card">
     <h2>Network Input Files</h2>
-    <p class="desc">One place to load demand nodes, supply sources, and pricing discounts. Drop several CSV files at once, or one Excel workbook with clearly named sheets.</p>
+    <p class="desc">One place to load demand nodes, supply sources, asset inventory, and pricing discounts. Drop several CSV files at once, or one Excel workbook with clearly named sheets.</p>
     <div class="import-dropzone" id="masterImportDropzone" role="button" tabindex="0">
       <h3>Drop input files here</h3>
-      <p>Accepted: CSV, XLSX, XLS. Files are identified by their sheet name and columns, then routed automatically to Supply Sources, Demand Nodes, or Pricing.</p>
+      <p>Accepted: CSV, XLSX, XLS. Files are identified by their sheet name and columns, then routed automatically to Supply Sources, Demand Nodes, Asset Placement, or Pricing.</p>
       <button class="btn btn-primary" id="btnMasterImport" style="margin-top:12px">Choose Files</button>
       <input type="file" id="masterImportFiles" accept=".csv,.xlsx,.xls" multiple style="display:none">
     </div>
@@ -2253,16 +2509,22 @@ function renderParamsTab(){
       <span style="font-size:11px;color:var(--muted);font-weight:700">TEMPLATES</span>
       <button class="btn btn-small btn-outline" id="btnDemandTemplateMaster">Demand Nodes</button>
       <button class="btn btn-small btn-outline" id="btnSupplyTemplateMaster">Supply Sources</button>
+      <button class="btn btn-small btn-outline" id="btnAssetTemplateMaster">Assets</button>
       <button class="btn btn-small btn-outline" id="btnPricingTemplateMaster">Pricing Discounts</button>
     </div>
   </div>
   <div class="card" style="max-width:640px">
     <h2>Trailer &amp; Network Parameters</h2>
     <p class="desc">These global assumptions drive the sourcing and resiliency optimization.</p>
-    <div class="row2">
-      <div class="field"><label>Trailer Capacity (${p.unit}/trailer)</label><input id="pCap" type="number" value="${p.trailerCap}"></div>
-      <div class="field"><label>Transport Cost ($/mile per loaded trailer)</label><input id="pMile" type="number" step="0.05" value="${p.costPerMile}"></div>
+    <div class="field">
+      <label>Trailer Types and Capacities</label>
+      ${trailerCapacityTableHtml(p.trailerCapacities||[])}
+      <div class="note">Enter a capacity and a new blank field appears below it automatically — add as many capacities as you actually have under each pressure type. For each lane and staging requirement, the model finds the fewest trailers (any mix of your enabled capacities) that covers the volume, then breaks ties by least unused capacity.</div>
     </div>
+    <div class="field">
+      <div class="note">Every node requires high-pressure-capable delivery. A Low Pressure trailer is assumed to be paired 1:1 with a Mobile Refueler on arrival, providing equivalent High Pressure capability at the node — so both trailer types satisfy the high-pressure requirement, and the model picks whichever mix is cheapest without treating pressure as a constraint. Refuelers are assumed available wherever needed (not a limited resource to track); wherever a plan uses Low Pressure trailers, the matching refueler count is shown alongside it.</div>
+    </div>
+    <div class="field"><label>Transport Cost ($/mile per loaded trailer)</label><input id="pMile" type="number" step="0.05" value="${p.costPerMile}"></div>
     <div class="row2">
       <div class="field"><label>Average Transit Speed (mph)</label><input id="pSpeed" type="number" value="${p.avgSpeed}"></div>
       <div class="field"><label>Unit Label</label><input id="pUnit" value="${p.unit}"></div>
@@ -2297,7 +2559,21 @@ function renderParamsTab(){
     <div class="field">
       <label>HyCAS Unit Compression Capacity (${p.unit}/day)</label>
       <input id="pHycasCapacity" type="number" min="1" step="10" value="${p.hycasCapacity}">
-      <div class="note">These are independent from the trailer targets above — a Mobile HyCAS unit responds to a <b>compression failure</b> at a node, not a supply outage, so it's a separate coverage problem with its own radius/time budget. The tool recommends the <b>smallest number of units and locations</b> that put every demand node within both targets of at least one unit. Because a compression failure hits one node at a time (not a shared volume draw like trailers), a unit's capacity only needs to cover the single largest node it might be dispatched to — check the Capacity Check column in Optimization Results if you raise a node's consumption rate significantly.</div>
+    </div>
+    <div class="field">
+      <label>HyCAS Onboard Storage</label>
+      <select id="pHycasHasStorage">
+        <option value="no" ${!p.hycasHasOnboardStorage?'selected':''}>No</option>
+        <option value="yes" ${p.hycasHasOnboardStorage?'selected':''}>Yes</option>
+      </select>
+    </div>
+    ${p.hycasHasOnboardStorage?`
+    <div class="field">
+      <label>Onboard Storage Capacity (${p.unit})</label>
+      <input id="pHycasStorageCapacity" type="number" min="1" step="10" value="${p.hycasStorageCapacity}">
+    </div>`:''}
+    <div class="field">
+      <div class="note">These are independent from the trailer targets above — a Mobile HyCAS unit responds to a <b>compression failure</b> at a node, not a supply outage, so it's a separate coverage problem with its own radius/time budget. The tool recommends the <b>smallest number of units and locations</b> that put every demand node within both targets of at least one unit. Because a compression failure hits one node at a time (not a shared volume draw like trailers), a unit's capacity only needs to cover the single largest node it might be dispatched to — check the Capacity Check column in Optimization Results if you raise a node's consumption rate significantly. Onboard storage is captured here for reference and isn't yet factored into that capacity check — say the word if you want it wired in.</div>
     </div>
     <button class="btn btn-primary" id="btnSaveParams">Apply &amp; Recalculate</button>
   </div>`;
@@ -2442,6 +2718,34 @@ function renderResultsTab(){
   </div>
 
   <div class="card">
+    <h2>Report Branding</h2>
+    <p class="desc">Logos placed here appear on every page of the exported Map, Operational PDF, and Sourcing PDF — not on the live on-screen view. Saved with Save Scenario, so they travel with the rest of a customer engagement.</p>
+    <div class="row2">
+      <div>
+        <div class="subhead" style="margin-top:0">Your Company Logo</div>
+        ${S.exportBranding.companyLogo?`
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <img src="${S.exportBranding.companyLogo}" alt="Company logo" style="max-height:48px;max-width:160px;border:1px solid var(--border);border-radius:4px;padding:4px;background:#fff">
+            <button class="btn btn-small btn-danger" id="btnRemoveCompanyLogo">Remove</button>
+          </div>`:'<div class="empty" style="padding:14px">No logo set</div>'}
+        <button class="btn btn-small btn-outline" id="btnUploadCompanyLogo">Upload Logo</button>
+        <input type="file" id="companyLogoFile" accept="image/png,image/jpeg,image/svg+xml" style="display:none">
+      </div>
+      <div>
+        <div class="subhead" style="margin-top:0">Customer Company Logo</div>
+        ${S.exportBranding.customerLogo?`
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <img src="${S.exportBranding.customerLogo}" alt="Customer logo" style="max-height:48px;max-width:160px;border:1px solid var(--border);border-radius:4px;padding:4px;background:#fff">
+            <button class="btn btn-small btn-danger" id="btnRemoveCustomerLogo">Remove</button>
+          </div>`:'<div class="empty" style="padding:14px">No logo set</div>'}
+        <button class="btn btn-small btn-outline" id="btnUploadCustomerLogo">Upload Logo</button>
+        <input type="file" id="customerLogoFile" accept="image/png,image/jpeg,image/svg+xml" style="display:none">
+      </div>
+    </div>
+    <div class="field"><label>Customer Name <span style="color:#AAB2BD;font-weight:400">— shown next to the logo if there's no image, or blank to omit</span></label><input id="fCustomerName" value="${esc(S.exportBranding.customerName)}" placeholder="Acme Energy Co."></div>
+  </div>
+
+  <div class="card">
     <div class="flexbetween"><h2 style="margin-bottom:0">Resiliency &amp; Trailer Pre-Positioning Plan</h2>${placementReachBadge()}</div>
     <p class="desc">Each weighted cluster center is matched to its nearest real town center. Coverage and real-road reach are calculated from that town center; the nearest existing facility is shown separately for context. Confirm operational suitability and available yard space before deployment.</p>
     <table><thead><tr><th>Hub #</th><th>Proposed Location</th><th>Nearest Existing Facility</th><th>Nodes Covered</th><th>Coverage Demand (${S.params.unit}/day)</th><th>Avg Reach</th><th>Max Reach</th><th>Trailers to Stage</th><th>Fill Source</th><th>One-Time Staging Cost</th></tr></thead>
@@ -2456,7 +2760,7 @@ function renderResultsTab(){
         <td>${fmt(h.coveredDemand)}</td>
         <td>${fmt(h.avgDist,0)} mi <span style="color:#AAB2BD">(${fmtHours(h.avgHours)})</span></td>
         <td>${fmt(h.maxDist,0)} mi <span style="color:#AAB2BD">(${fmtHours(h.maxHours)})</span></td>
-        <td><b>${h.trailers}</b></td>
+        <td><b>${h.trailers}</b>${h.trailerPlan?`<br><span style="color:var(--muted);font-size:10px">${esc(h.trailerPlan.label)}</span>`:''}</td>
         <td>${h.stagingSource?`${esc(h.stagingSource.name)}<br><span style="color:#AAB2BD">${fmt(h.stagingSourceDist,0)} mi away</span>`:'<span style="color:var(--red)">No active source</span>'}</td>
         <td><b>${money(h.stagingCost,0)}</b>${h.trailers>0?`<br><span style="color:#AAB2BD">${money(h.costPerTrailer,0)}/trailer</span>`:''}</td>
       </tr>`).join('')}
@@ -2519,7 +2823,7 @@ function renderResultsTab(){
           <td>${fmt(f.dist,0)} <span style="color:#AAB2BD;font-size:10px">${f.isReal?'road':'straight-line'}</span></td>
           <td>${fmtHours(f.hours)}</td>
           <td>${fmt(f.amt,0)}</td>
-          <td>${f.trips}</td>
+          <td>${f.trips}${f.trailerPlan?`<br><span style="color:var(--muted);font-size:10px">${esc(f.trailerPlan.label)}</span>`:''}</td>
           <td>${money(f.effectiveLanded)}</td>
           <td>${money(f.totalCost,0)}</td>
         </tr>`;
@@ -2827,7 +3131,7 @@ function renderAssetPlacementTab(){
           <div class="field"><label>Target Max Response Time (hours)</label><input id="fAssetTargetHours" type="number" min="0.5" step="0.5" value="${ap.targetHours}"></div>
         </div>
         <div class="field"><label>Safety-Stock Days (for H2 Storage capacity checks)</label><input id="fAssetSafetyDays" type="number" min="0.5" step="0.5" value="${ap.safetyDays}"></div>
-        <button class="btn btn-primary" id="btnRecalcAssets">Apply &amp; Recalculate</button>
+        <button class="btn btn-primary" id="btnRecalcAssets">Run Asset Placement Recommendation</button>
       </div>
       <div class="note" style="margin-top:0">Compression capacity is checked against the single largest demand node any one asset covers — a compression failure hits one node at a time. Storage capacity is checked against the combined demand of every node an asset covers, times the safety-stock days above — a storage asset's volume gets drawn down by everything it serves at once.</div>
     </div>
@@ -2847,7 +3151,170 @@ function renderAssetPlacementTab(){
   </div>`;
 }
 
-/* ===================== RENDER: PRICING MODEL TAB ===================== */
+let lastAssetPlacementComputed=null;
+function renderAssetPlacementRecommendationTab(){
+  if(S.demand.length===0) return `<div class="card"><div class="empty">Add demand nodes before generating an asset placement recommendation.</div></div>`;
+  if(S.assets.length===0) return `<div class="card"><div class="empty">Add assets on the Asset Placement tab or drop an asset file into Input Parameters.</div></div>`;
+  const result=computeAssetPlacement();
+  lastAssetPlacementComputed=result;
+  const all=[...result.compression.assets,...result.storage.assets];
+  const shortfalls=all.filter(a=>!a.capacitySufficient).length;
+  const outside=all.filter(a=>a.maxDist>S.assetPlacement.targetRadius||a.maxHours>S.assetPlacement.targetHours).length;
+  function section(label,r,capacityLabel){
+    if(!r.assets.length) return '';
+    return `<div class="card">
+      <div class="flexbetween"><h2 style="margin-bottom:0">${label} Placement Plan</h2>${placementReachBadge()}</div>
+      <p class="desc">Recommended assignment from the inventory and guardrails configured on Asset Placement.</p>
+      <table><thead><tr><th>Assigned Asset</th><th>Proposed Location</th><th>Nearest Facility</th><th>Nodes Covered</th><th>Coverage Demand</th><th>Avg / Max Reach</th><th>Capacity Check</th></tr></thead>
+      <tbody>${r.assets.map(a=>`<tr>
+        <td><b>${esc(a.assetName)}</b><br><span style="color:var(--muted)">${fmt(a.assetCapacity,0)} capacity</span></td>
+        <td><b>${a.cityRef?`${esc(a.cityRef.name)}, ${esc(a.cityRef.state)}`:'Unnamed area'}</b><br><span style="color:var(--muted)">${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}</span></td>
+        <td>${a.nearestFacility?`${esc(a.nearestFacility.name)}<br><span style="color:var(--muted)">${fmt(a.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
+        <td>${a.covered.length}</td><td>${fmt(a.coveredDemand)} ${S.params.unit}/day</td>
+        <td>${fmt(a.avgDist,0)} mi (${fmtHours(a.avgHours)}) / ${fmt(a.maxDist,0)} mi (${fmtHours(a.maxHours)})</td>
+        <td>${a.capacitySufficient?'<span class="tag tag-low">Sufficient</span>':`<span class="tag tag-high">Needs ${fmt(a.capacityDetail,0)} ${esc(capacityLabel)}</span>`}</td>
+      </tr>`).join('')}</tbody></table>
+    </div>`;
+  }
+  return `
+    ${calculationReadinessBanner()}
+    <div class="kpirow">
+      <div class="kpi"><div class="val">${result.compression.assets.length}</div><div class="lbl">Compression Placements</div></div>
+      <div class="kpi"><div class="val">${result.storage.assets.length}</div><div class="lbl">Storage Placements</div></div>
+      <div class="kpi ${shortfalls?'warn':''}"><div class="val">${shortfalls}</div><div class="lbl">Capacity Shortfalls</div></div>
+      <div class="kpi ${outside?'warn':''}"><div class="val">${outside}</div><div class="lbl">Outside Reach Target</div></div>
+    </div>
+    <div class="card status-card ${!shortfalls&&!outside?'status-ok':''}">
+      <b class="status-title">${!shortfalls&&!outside?'✓ Recommendation meets the configured targets':'⚠ Recommendation needs review'}</b>
+      &nbsp;—&nbsp; Based on ${S.assets.length} imported/entered asset(s), ${fmt(S.assetPlacement.targetRadius,0)}mi / ${fmt(S.assetPlacement.targetHours,1)}h reach, and ${fmt(S.assetPlacement.safetyDays,1)} storage day(s).
+    </div>
+    <div class="card">
+      <h2>Asset Placement Map</h2>
+      <p class="desc">Compression assets are purple triangles; storage assets are amber diamonds. Circles show the configured response radius.</p>
+      <div class="mapwrap"><svg id="assetRecommendationSvg" viewBox="0 0 960 600" style="display:block;width:100%;height:auto;background:var(--map-bg)"></svg></div>
+    </div>
+    ${section('Compression',result.compression,'throughput')}
+    ${section('H2 Storage',result.storage,'storage')}
+  `;
+}
+
+function drawAssetRecommendationMap(){
+  const svg=document.getElementById('assetRecommendationSvg');
+  if(!svg||!lastAssetPlacementComputed) return;
+  const mapColors=THEME==='dark'?{fill:'#1B2430',stroke:'#3A4657',label:'#5A6B82'}:{fill:'#FFFFFF',stroke:'#CBD2DB',label:'#AEB6C2'};
+  let html='';
+  Object.values(STATE_PATHS).forEach(d=>{html+=`<path d="${d}" fill="${mapColors.fill}" stroke="${mapColors.stroke}" stroke-width="0.8"/>`;});
+  STATE_LABELS.forEach(s=>{const [x,y]=svgXY(s.lat,s.lon);html+=`<text x="${x}" y="${y}" font-size="7" fill="${mapColors.label}" text-anchor="middle">${s.abbr}</text>`;});
+  const radius=S.assetPlacement.targetRadius*1.60934*PROJ.scale;
+  const all=[
+    ...lastAssetPlacementComputed.compression.assets.map(a=>({...a,kind:'compression'})),
+    ...lastAssetPlacementComputed.storage.assets.map(a=>({...a,kind:'storage'})),
+  ];
+  all.forEach(a=>{const [x,y]=svgXY(a.lat,a.lon);const color=a.kind==='compression'?'#7A5195':'#F2A900';html+=`<circle cx="${x}" cy="${y}" r="${radius}" fill="${color}" fill-opacity=".045" stroke="${color}" stroke-width="1.2" stroke-dasharray="5,3"/>`;});
+  S.demand.forEach(n=>{const [x,y]=svgXY(n.lat,n.lon);html+=`<circle cx="${x}" cy="${y}" r="5" fill="#1E8A5F" stroke="#fff" stroke-width="1.2"/>`;});
+  all.forEach(a=>{
+    const [x,y]=svgXY(a.lat,a.lon);
+    html+=a.kind==='compression'
+      ? `<polygon points="${x},${y-9} ${x+8},${y+6} ${x-8},${y+6}" fill="#7A5195" stroke="#fff" stroke-width="1.4"/>`
+      : `<g transform="translate(${x},${y}) rotate(45)"><rect x="-7" y="-7" width="14" height="14" fill="#F2A900" stroke="#fff" stroke-width="1.4"/></g>`;
+  });
+  svg.innerHTML=html;
+}
+
+/* ===================== RENDER: REAL ESTATE ASSETS TAB ===================== */
+function renderRealEstateTab(){
+  const total = S.realEstate.length;
+  const pending = S.realEstate.filter(a=>a.geocodeStatus==='pending').length;
+  const geocoded = S.realEstate.filter(a=>a.geocodeStatus==='geocoded').length;
+  const errored = S.realEstate.filter(a=>a.geocodeStatus==='error').length;
+  const proximity = computeRealEstateProximity();
+  const bandCounts = {'\u2264 5 mi':0, '\u2264 10 mi':0, '\u2264 25 mi':0, '> 25 mi':0};
+  proximity.forEach(p=>bandCounts[p.band]++);
+
+  return `
+  <div class="card">
+    <h2>Real Estate Assets</h2>
+    <p class="desc">Upload a spreadsheet of physical properties you already own or could use, geocode them to real coordinates, then overlay the currently-recommended staging hub locations to see how close your real estate actually is to where the model wants a hub.</p>
+    <div class="toolbar">
+      <button class="btn btn-small btn-outline" id="btnRealEstateTemplate">Download Template</button>
+      <button class="btn btn-small btn-outline" id="btnRealEstateImport">Import Spreadsheet</button>
+      <input type="file" id="realEstateFile" accept=".csv,.xlsx,.xls" style="display:none">
+      ${total>0?`<button class="btn btn-small btn-danger" id="btnRealEstateClear">Clear All ${total}</button>`:''}
+    </div>
+    <div class="note" style="margin-top:0">Recognized columns: <b>Name, Street Address, City, State, Postal Code, Acreage, Description</b> (Acreage/Description optional). A spreadsheet with these columns dropped on the Input Parameters import area routes here automatically too.</div>
+  </div>
+  ${total===0?'<div class="card"><div class="empty">No properties loaded yet. Import a spreadsheet to get started.</div></div>':`
+  <div class="kpirow">
+    <div class="kpi"><div class="val">${total}</div><div class="lbl">Properties Loaded</div></div>
+    <div class="kpi"><div class="val">${geocoded}</div><div class="lbl">Geocoded</div></div>
+    <div class="kpi ${pending>0?'warn':''}"><div class="val">${pending}</div><div class="lbl">Not Yet Geocoded</div></div>
+    <div class="kpi ${errored>0?'warn':''}"><div class="val">${errored}</div><div class="lbl">Geocode Failed</div></div>
+  </div>
+  ${pending>0?`
+  <div class="card" style="border-color:#F3DDB0;background:#FFFBF0">
+    <b style="color:#B57500">${pending} propert${pending===1?'y needs':'ies need'} geocoding</b> before they can be placed on the map or compared to hub locations.
+    ${realEstateGeocodeStatus==='running'
+      ? `<div style="margin-top:8px">Geocoding\u2026 ${realEstateGeocodeProgress.done} of ${realEstateGeocodeProgress.total}</div>`
+      : `<div style="margin-top:8px"><button class="btn btn-small btn-primary" id="btnGeocodeRealEstate">Geocode ${pending} Address${pending===1?'':'es'}</button>
+         ${realEstateGeocodeStatus==='error'?`<span style="color:var(--red);font-size:12px;margin-left:8px">${esc(realEstateGeocodeError)}</span>`:''}</div>`}
+    <div class="note" style="margin-top:8px;margin-bottom:0">Geocoding uses your organization's routing service quota (OpenRouteService, same as road distances elsewhere in the app) \u2014 large lists may take a minute or two and are processed in batches, with progress shown here.</div>
+  </div>`:''}
+  ${geocoded>0?`
+  <div class="card">
+    <div class="flexbetween">
+      <h2 style="margin-bottom:0">Map</h2>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+        <input type="checkbox" id="chkRealEstateOverlay" ${S.showRealEstateOverlay?'checked':''} style="width:15px;height:15px;cursor:pointer">
+        Show recommended hub locations
+      </label>
+    </div>
+    ${!lastComputed?'<div class="note">Visit Optimization Results at least once to compute hub locations before they can be overlaid here.</div>':''}
+    <div class="mapwrap"><svg id="realEstateSvg" viewBox="0 0 960 600" style="display:block;width:100%;height:auto;background:var(--map-bg)"></svg></div>
+  </div>
+  <div class="card">
+    <h2>Proximity to Nearest Recommended Hub</h2>
+    ${!lastComputed?'<div class="empty">Visit Optimization Results at least once to see distance bands here.</div>':`
+    <div class="kpirow">
+      <div class="kpi"><div class="val">${bandCounts['\u2264 5 mi']}</div><div class="lbl">Within 5 mi</div></div>
+      <div class="kpi"><div class="val">${bandCounts['\u2264 10 mi']}</div><div class="lbl">Within 10 mi</div></div>
+      <div class="kpi"><div class="val">${bandCounts['\u2264 25 mi']}</div><div class="lbl">Within 25 mi</div></div>
+      <div class="kpi ${bandCounts['> 25 mi']>0?'warn':''}"><div class="val">${bandCounts['> 25 mi']}</div><div class="lbl">Farther than 25 mi</div></div>
+    </div>
+    <table><thead><tr><th>Property</th><th>Address</th><th>Nearest Hub</th><th>Distance</th><th>Band</th></tr></thead>
+    <tbody>
+    ${proximity.map(p=>`
+      <tr>
+        <td><b>${esc(p.asset.name)}</b>${p.asset.acreage?`<br><span style="color:#AAB2BD">${fmt(p.asset.acreage,2)} ac</span>`:''}</td>
+        <td>${esc(p.asset.streetAddress)}<br><span style="color:#AAB2BD">${esc(p.asset.city)}, ${esc(p.asset.state)}</span></td>
+        <td>Hub ${p.hub.idx}</td>
+        <td>${fmt(p.dist,1)} mi (${fmtHours(p.hours)})${p.isReal?'':' <span style="color:#AAB2BD;font-size:11px">(straight-line)</span>'}</td>
+        <td><span class="tag ${p.band==='> 25 mi'?'tag-high':p.band==='\u2264 25 mi'?'tag-med':'tag-low'}">${p.band}</span></td>
+      </tr>`).join('')}
+    </tbody></table>`}
+  </div>`:''}`}`;
+}
+
+function drawRealEstateMap(){
+  const svg=document.getElementById('realEstateSvg');
+  if(!svg) return;
+  const mapColors=THEME==='dark'?{fill:'#1B2430',stroke:'#3A4657',label:'#5A6B82'}:{fill:'#FFFFFF',stroke:'#CBD2DB',label:'#AEB6C2'};
+  let html='';
+  Object.values(STATE_PATHS).forEach(d=>{html+=`<path d="${d}" fill="${mapColors.fill}" stroke="${mapColors.stroke}" stroke-width="0.8"/>`;});
+  STATE_LABELS.forEach(s=>{const [x,y]=svgXY(s.lat,s.lon);html+=`<text x="${x}" y="${y}" font-size="7" fill="${mapColors.label}" text-anchor="middle">${s.abbr}</text>`;});
+  S.realEstate.filter(a=>a.geocodeStatus==='geocoded').forEach(a=>{
+    const [x,y]=svgXY(a.lat,a.lon);
+    html+=`<circle cx="${x}" cy="${y}" r="3.5" fill="#2E86DE" fill-opacity="0.85" stroke="#fff" stroke-width="1"><title>${esc(a.name)}</title></circle>`;
+  });
+  if(S.showRealEstateOverlay && lastComputed && lastComputed.hubs){
+    lastComputed.hubs.forEach(h=>{
+      const [x,y]=svgXY(h.lat,h.lon);
+      html+=`<g transform="translate(${x},${y}) rotate(45)"><rect x="-8" y="-8" width="16" height="16" fill="#F2A900" stroke="#fff" stroke-width="1.4"/></g>`;
+    });
+  }
+  svg.innerHTML=html;
+}
+
+
 /* PRICING_BLOCK_START */
 function renderPricingTab(){
   const base = computePricingBase();
@@ -3157,6 +3624,35 @@ function drawMap(){
 }
 
 /* ===================== PRESENTATION MAP EXPORT (clean, HQ, 16:9) ===================== */
+// Renders whatever's configured in S.exportBranding into the top-right of an export page's
+// header -- used by every export page builder (map, hub/HyCAS/risk/sourcing detail pages) so a
+// logo set once appears consistently across the whole exported set. Returns an empty string if
+// nothing is configured, so callers never need to check first. rightEdgeX/centerY should match
+// the page's own header coordinate system (all current export pages share the same one: right
+// edge at VBW-36, title vertically centered around y=45-55).
+function svgReportBrandingSVG(rightEdgeX, centerY, mutedColor){
+  const b = S.exportBranding;
+  if(!b.companyLogo && !b.customerLogo && !b.customerName) return '';
+  const boxH = 52, boxW = 150, gap = 16;
+  let svg = '';
+  let x = rightEdgeX;
+  if(b.customerLogo){
+    x -= boxW;
+    svg += `<image href="${b.customerLogo}" x="${x}" y="${centerY-boxH/2}" width="${boxW}" height="${boxH}" preserveAspectRatio="xMidYMid meet"/>`;
+    x -= gap;
+  } else if(b.customerName){
+    const textW = 220;
+    x -= textW;
+    svg += `<text x="${x+textW}" y="${centerY+6}" font-size="17" font-weight="700" fill="${mutedColor}" text-anchor="end">${esc(b.customerName)}</text>`;
+    x -= gap;
+  }
+  if(b.companyLogo){
+    x -= boxW;
+    svg += `<image href="${b.companyLogo}" x="${x}" y="${centerY-boxH/2}" width="${boxW}" height="${boxH}" preserveAspectRatio="xMidYMid meet"/>`;
+  }
+  return svg;
+}
+
 function buildPresentationSVG(exportTheme){
   const {sourcing, risk, hubs, kpi, hycasUnits} = lastComputed;
   const VBW = 1920, VBH = 1080;
@@ -3181,6 +3677,7 @@ function buildPresentationSVG(exportTheme){
   svg += `<text x="36" y="80" font-size="14" fill="${MUTED}">Sourcing assignments &amp; recommended resiliency staging hubs — Target Delivery Radius: ${fmt(S.params.targetRadius,0)} mi</text>`;
   svg += `<rect x="36" y="90" width="120" height="4" fill="#0071CE"/>`;
   svg += `<line x1="36" y1="100" x2="${VBW-36}" y2="100" stroke="${BORDER}" stroke-width="1"/>`;
+  svg += svgReportBrandingSVG(VBW-36, 45, MUTED);
 
   // map panel background
   svg += `<rect x="${mapX}" y="${mapY}" width="${mapW}" height="${mapH}" fill="${PAL.PANEL}" stroke="${BORDER}" stroke-width="1"/>`;
@@ -3352,6 +3849,7 @@ function buildTablePageSVG(exportTheme, title, subtitle, columns, rows){
   svg += `<text x="36" y="80" font-size="14" fill="${MUTED}">${esc(subtitle)}</text>`;
   svg += `<rect x="36" y="90" width="120" height="4" fill="#0071CE"/>`;
   svg += `<line x1="36" y1="100" x2="${VBW-36}" y2="100" stroke="${BORDER}" stroke-width="1"/>`;
+  svg += svgReportBrandingSVG(VBW-36, 45, MUTED);
 
   const panelX=36, panelY=118, panelW=VBW-72, panelH=VBH-118-58;
   svg += `<rect x="${panelX}" y="${panelY}" width="${panelW}" height="${panelH}" fill="${PAL.PANEL}" stroke="${BORDER}" stroke-width="1" rx="6"/>`;
@@ -3411,7 +3909,7 @@ function buildHubDetailPageSVG(exportTheme, pageHubs=null, pageNumber=1, totalPa
     `${h.covered.length}`,
     `${fmt(h.coveredDemand)} ${S.params.unit}/day`,
     { main: `${fmt(h.avgDist,0)} mi (${fmtHours(h.avgHours)})`, sub: `max ${fmt(h.maxDist,0)} mi (${fmtHours(h.maxHours)})` },
-    `${h.trailers}`,
+    {main:`${h.trailers}`,sub:h.trailerPlan?h.trailerPlan.label:''},
     { main: h.stagingSource?h.stagingSource.name:'—', sub: h.stagingSource?`${fmt(h.stagingSourceDist,0)} mi away`:'' },
     money(h.stagingCost,0),
   ]);
@@ -3480,7 +3978,7 @@ function sourcingExportRows(){
       rows.push([
         i===0?n.name:'',source?`${source.name}${i?' (secondary)':''}`:'—',
         `${fmt(f.dist,0)} mi`,fmtHours(f.hours),`${fmt(f.amt,0)} ${S.params.unit}/day`,
-        `${f.trips}`,`${money(f.effectiveLanded)}/${S.params.unit}`,money(f.totalCost,0),
+        f.trailerPlan?`${f.trips} (${f.trailerPlan.label})`:`${f.trips}`,`${money(f.effectiveLanded)}/${S.params.unit}`,money(f.totalCost,0),
       ]);
     });
     if(summary.unmet>0) rows.push(['','Unmet demand','—','—',`${fmt(summary.unmet)} ${S.params.unit}/day`,'—','—','—']);
@@ -3795,14 +4293,59 @@ function attachHandlers(){
   if(btnDemandTemplateMaster) btnDemandTemplateMaster.addEventListener('click',()=>downloadTemplate('demand'));
   const btnSupplyTemplateMaster=document.getElementById('btnSupplyTemplateMaster');
   if(btnSupplyTemplateMaster) btnSupplyTemplateMaster.addEventListener('click',()=>downloadTemplate('supply'));
+  const btnAssetTemplateMaster=document.getElementById('btnAssetTemplateMaster');
+  if(btnAssetTemplateMaster) btnAssetTemplateMaster.addEventListener('click',()=>downloadTemplate('asset'));
   const btnPricingTemplateMaster=document.getElementById('btnPricingTemplateMaster');
   if(btnPricingTemplateMaster) btnPricingTemplateMaster.addEventListener('click',downloadDiscountTemplate);
 
+  const pHycasHasStorage = document.getElementById('pHycasHasStorage');
+  if(pHycasHasStorage) pHycasHasStorage.addEventListener('change', (e)=>{
+    commitParamsForm();
+    S.params.hycasHasOnboardStorage = e.target.value==='yes';
+    render();
+  });
   const btnSaveParams = document.getElementById('btnSaveParams');
   if(btnSaveParams) btnSaveParams.addEventListener('click', ()=>{
     commitParamsForm();
     S.activeTab='results';
     render();
+  });
+  // Typing a value into the LAST row's capacity field and moving away from it appends a fresh
+  // blank row below, so the table grows on demand instead of needing an explicit "add row"
+  // button. Full commitParamsForm() runs first so nothing else on the form gets lost when this
+  // re-renders.
+  document.querySelectorAll('.trailerCapField').forEach(el=>{
+    el.addEventListener('blur', ()=>{
+      const idx = parseInt(el.dataset.idx, 10);
+      const allIdxs = Array.from(document.querySelectorAll('.trailerCapField')).map(f=>parseInt(f.dataset.idx,10));
+      const maxIdx = Math.max(...allIdxs);
+      const val = parseFloat(el.value);
+      if(idx===maxIdx && !isNaN(val) && val>0){
+        commitParamsForm();
+        render();
+      }
+    });
+  });
+  // High Pressure and Low Pressure are mutually exclusive within the same row -- checking one
+  // clears the other immediately, matching the "exactly one X per row" table design.
+  document.querySelectorAll('.trailerPressureCheck').forEach(el=>{
+    el.addEventListener('change', ()=>{
+      if(el.checked){
+        const sibling = document.querySelector(`.trailerPressureCheck[data-idx="${el.dataset.idx}"][data-pressure="${el.dataset.pressure==='high'?'low':'high'}"]`);
+        if(sibling) sibling.checked = false;
+      }
+      commitParamsForm();
+      render();
+    });
+  });
+  document.querySelectorAll('.lnkRemoveTrailerCap').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.preventDefault();
+      commitParamsForm();
+      const idx = parseInt(el.dataset.idx, 10);
+      if(Array.isArray(S.params.trailerCapacities)) S.params.trailerCapacities.splice(idx, 1);
+      render();
+    });
   });
   const btnApplySafetyAll = document.getElementById('btnApplySafetyAll');
   if(btnApplySafetyAll) btnApplySafetyAll.addEventListener('click', ()=>{
@@ -3951,6 +4494,62 @@ function attachHandlers(){
   const assetCsvFile = document.getElementById('assetCsvFile');
   if(assetCsvFile) assetCsvFile.addEventListener('change', (e)=>{ if(e.target.files[0]) importAssetCSV(e.target.files[0]); e.target.value=''; });
 
+  const btnRealEstateTemplate = document.getElementById('btnRealEstateTemplate');
+  if(btnRealEstateTemplate) btnRealEstateTemplate.addEventListener('click', ()=>downloadTemplate('realestate'));
+  const btnRealEstateImport = document.getElementById('btnRealEstateImport');
+  if(btnRealEstateImport) btnRealEstateImport.addEventListener('click', ()=>document.getElementById('realEstateFile').click());
+  const realEstateFile = document.getElementById('realEstateFile');
+  if(realEstateFile) realEstateFile.addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    if(file) await importMasterFiles([file]);
+    e.target.value = '';
+  });
+  const btnRealEstateClear = document.getElementById('btnRealEstateClear');
+  if(btnRealEstateClear) btnRealEstateClear.addEventListener('click', ()=>{
+    if(confirm(`Remove all ${S.realEstate.length} loaded properties? This cannot be undone.`)){
+      S.realEstate = [];
+      render();
+    }
+  });
+
+  const readLogoFile = (file, onDone)=>{
+    if(!file) return;
+    if(!/^image\/(png|jpeg|svg\+xml)$/.test(file.type)){ alert('Please choose a PNG, JPG, or SVG image.'); return; }
+    const MAX_BYTES = 2*1024*1024; // 2MB -- keeps exports and Save Scenario files reasonably sized
+    if(file.size > MAX_BYTES){ alert('Logo file is too large (max 2MB). Try a smaller or more compressed image.'); return; }
+    const reader = new FileReader();
+    reader.onload = (e)=> onDone(e.target.result, file.name);
+    reader.onerror = ()=> alert('Could not read that image file.');
+    reader.readAsDataURL(file);
+  };
+  const btnUploadCompanyLogo = document.getElementById('btnUploadCompanyLogo');
+  if(btnUploadCompanyLogo) btnUploadCompanyLogo.addEventListener('click', ()=>document.getElementById('companyLogoFile').click());
+  const companyLogoFile = document.getElementById('companyLogoFile');
+  if(companyLogoFile) companyLogoFile.addEventListener('change', (e)=>{
+    readLogoFile(e.target.files[0], (dataUrl,name)=>{ S.exportBranding.companyLogo=dataUrl; S.exportBranding.companyLogoName=name; render(); });
+    e.target.value='';
+  });
+  const btnRemoveCompanyLogo = document.getElementById('btnRemoveCompanyLogo');
+  if(btnRemoveCompanyLogo) btnRemoveCompanyLogo.addEventListener('click', ()=>{ S.exportBranding.companyLogo=null; S.exportBranding.companyLogoName=''; render(); });
+
+  const btnUploadCustomerLogo = document.getElementById('btnUploadCustomerLogo');
+  if(btnUploadCustomerLogo) btnUploadCustomerLogo.addEventListener('click', ()=>document.getElementById('customerLogoFile').click());
+  const customerLogoFile = document.getElementById('customerLogoFile');
+  if(customerLogoFile) customerLogoFile.addEventListener('change', (e)=>{
+    readLogoFile(e.target.files[0], (dataUrl,name)=>{ S.exportBranding.customerLogo=dataUrl; S.exportBranding.customerLogoName=name; render(); });
+    e.target.value='';
+  });
+  const btnRemoveCustomerLogo = document.getElementById('btnRemoveCustomerLogo');
+  if(btnRemoveCustomerLogo) btnRemoveCustomerLogo.addEventListener('click', ()=>{ S.exportBranding.customerLogo=null; S.exportBranding.customerLogoName=''; render(); });
+
+  const fCustomerName = document.getElementById('fCustomerName');
+  if(fCustomerName) fCustomerName.addEventListener('change', (e)=>{ S.exportBranding.customerName = e.target.value.trim(); });
+
+  const btnGeocodeRealEstate = document.getElementById('btnGeocodeRealEstate');
+  if(btnGeocodeRealEstate) btnGeocodeRealEstate.addEventListener('click', ()=>{ refreshRealEstateGeocoding(); });
+  const chkRealEstateOverlay = document.getElementById('chkRealEstateOverlay');
+  if(chkRealEstateOverlay) chkRealEstateOverlay.addEventListener('change', (e)=>{ S.showRealEstateOverlay = e.target.checked; render(); });
+
   const btnRecalcAssets = document.getElementById('btnRecalcAssets');
   if(btnRecalcAssets) btnRecalcAssets.addEventListener('click', ()=>{
     const safetyDays = parseFloat(document.getElementById('fAssetSafetyDays').value);
@@ -3960,6 +4559,7 @@ function attachHandlers(){
     if(isNaN(targetRadius)||targetRadius<=0){ alert('Enter a valid target delivery radius.'); return; }
     if(isNaN(targetHours)||targetHours<=0){ alert('Enter a valid target response time.'); return; }
     S.assetPlacement = { safetyDays, targetRadius, targetHours };
+    S.activeTab='asset-results';
     render();
   });
 
@@ -4019,14 +4619,36 @@ function attachHandlers(){
   }));
 
   if(S.activeTab==='results') drawMap();
+  if(S.activeTab==='asset-results') drawAssetRecommendationMap();
+  if(S.activeTab==='realestate') drawRealEstateMap();
 }
 
 // Reads whatever is currently in the Parameters form fields (if that tab is showing) and
 // commits it to S.params. Safe to call even when the params fields aren't in the DOM.
 function commitParamsForm(){
-  const pCap = document.getElementById('pCap');
-  if(!pCap) return; // params tab isn't currently rendered, nothing to commit
-  S.params.trailerCap = parseFloat(document.getElementById('pCap').value)||S.params.trailerCap;
+  const anyTrailerField = document.querySelector('.trailerCapField');
+  if(!anyTrailerField) return; // params tab isn't currently rendered, nothing to commit
+
+  const fields = Array.from(document.querySelectorAll('.trailerCapField'));
+  const trailerCapacities = fields.map(f=>{
+    const cap = parseFloat(f.value);
+    if(isNaN(cap) || cap<=0) return null; // the trailing blank row, or a cleared-out field
+    const highCheck = document.querySelector(`.trailerPressureCheck[data-idx="${f.dataset.idx}"][data-pressure="high"]`);
+    const lowCheck = document.querySelector(`.trailerPressureCheck[data-idx="${f.dataset.idx}"][data-pressure="low"]`);
+    const pressure = (highCheck && highCheck.checked) ? 'high' : (lowCheck && lowCheck.checked) ? 'low' : null;
+    return { capacity: cap, pressure };
+  }).filter(Boolean);
+  if(!trailerCapacities.some(t=>t.pressure)){
+    // Nothing classified as either pressure -- default the first entered capacity to High
+    // Pressure rather than silently discarding everything the user typed in.
+    if(trailerCapacities.length) trailerCapacities[0].pressure = 'high';
+    else trailerCapacities.push({capacity:750, pressure:'high'});
+  }
+  S.params.trailerCapacities = trailerCapacities;
+  // Retained in saved files for compatibility with earlier HyWeave builds.
+  const classified = trailerCapacities.filter(t=>t.pressure);
+  S.params.trailerCap = classified.length ? Math.max(...classified.map(t=>t.capacity)) : (S.params.trailerCap||750);
+
   S.params.costPerMile = parseFloat(document.getElementById('pMile').value)||S.params.costPerMile;
   S.params.avgSpeed = parseFloat(document.getElementById('pSpeed').value)||S.params.avgSpeed;
   S.params.safetyDays = parseFloat(document.getElementById('pSafety').value)||S.params.safetyDays;
@@ -4035,6 +4657,12 @@ function commitParamsForm(){
   S.params.hycasRadius = parseFloat(document.getElementById('pHycasRadius').value)||S.params.hycasRadius;
   S.params.hycasHours = parseFloat(document.getElementById('pHycasHours').value)||S.params.hycasHours;
   S.params.hycasCapacity = parseFloat(document.getElementById('pHycasCapacity').value)||S.params.hycasCapacity;
+  const pHycasHasStorageEl = document.getElementById('pHycasHasStorage');
+  if(pHycasHasStorageEl) S.params.hycasHasOnboardStorage = pHycasHasStorageEl.value==='yes';
+  if(S.params.hycasHasOnboardStorage){
+    const capEl = document.getElementById('pHycasStorageCapacity');
+    if(capEl) S.params.hycasStorageCapacity = parseFloat(capEl.value)||S.params.hycasStorageCapacity;
+  }
   S.params.unit = document.getElementById('pUnit').value.trim()||'kg';
 }
 
@@ -4056,7 +4684,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}],costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000,hycasHasOnboardStorage:false,hycasStorageCapacity:500}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
     lastScenario = null;
     render();
   }
@@ -4072,6 +4700,7 @@ if(btnSaveScenarioTop) btnSaveScenarioTop.addEventListener('click', ()=>{
     supply: S.supply,
     params: S.params,
     distanceOverrides: S.distanceOverrides,
+    exportBranding: S.exportBranding,
     results: lastComputed ? {
       kpi: lastComputed.kpi,
       hubs: lastComputed.hubs.map(h=>({
@@ -4127,15 +4756,48 @@ function applyScenarioFile(file, onDone){
     try{
       const data = JSON.parse(ev.target.result);
       if(!Array.isArray(data.demand) || !Array.isArray(data.supply)) throw new Error('File does not look like a saved scenario (missing demand/supply arrays).');
-      const defaults = {trailerCap:750,costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000};
+      const defaults = {trailerCap:750,trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}],costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000,hycasHasOnboardStorage:false,hycasStorageCapacity:500,};
       S.demand = data.demand.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), rate:parseFloat(n.rate), safetyDays:parseFloat(n.safetyDays)||defaults.safetyDays }));
       S.supply = data.supply.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), capacity:parseFloat(n.capacity), cost:parseFloat(n.cost), status:(n.status==='future'?'future':'current') }));
       S.params = Object.assign({}, defaults, data.params||{});
+      // Normalize to the current unified trailerCapacities shape, whatever format the loaded
+      // file actually has: already-correct (this format), the per-pressure-type arrays from an
+      // in-between build, the single-capacity-object-per-type format from an earlier build, or
+      // absent entirely (pre-feature file, falls back to the legacy trailerCap value).
+      const dp = (data.params && data.params) || {};
+      let trailerCapacities = [];
+      if(Array.isArray(dp.trailerCapacities)){
+        trailerCapacities = dp.trailerCapacities.filter(t=>t && (t.pressure==='high'||t.pressure==='low') && Number(t.capacity)>0)
+          .map(t=>({capacity:Number(t.capacity), pressure:t.pressure}));
+      } else if(dp.trailerTypes){
+        ['low','high'].forEach(pressure=>{
+          const val = dp.trailerTypes[pressure];
+          if(Array.isArray(val)){
+            val.forEach(t=>{ if(t && Number(t.capacity)>0 && t.enabled!==false) trailerCapacities.push({capacity:Number(t.capacity), pressure}); });
+          } else if(val && typeof val==='object' && Number(val.capacity)>0 && val.enabled!==false){
+            trailerCapacities.push({capacity:Number(val.capacity), pressure});
+          }
+        });
+      }
+      if(!trailerCapacities.length){
+        trailerCapacities = [{capacity: Number(dp.trailerCap)||750, pressure:'high'}];
+      }
+      S.params.trailerCapacities = trailerCapacities;
+      delete S.params.trailerTypes; // fully migrated -- don't carry the old shape forward
       S.distanceOverrides = Array.isArray(data.distanceOverrides)
         ? data.distanceOverrides.filter(o=>o && o.nodeId && o.sourceId && Number.isFinite(Number(o.distanceMiles)) && Number.isFinite(Number(o.durationHours))).map(o=>({
             nodeId:o.nodeId, sourceId:o.sourceId, distanceMiles:Number(o.distanceMiles), durationHours:Number(o.durationHours)
           }))
         : [];
+      if(data.exportBranding && typeof data.exportBranding==='object'){
+        S.exportBranding = {
+          companyLogo: typeof data.exportBranding.companyLogo==='string' ? data.exportBranding.companyLogo : null,
+          companyLogoName: data.exportBranding.companyLogoName || '',
+          customerLogo: typeof data.exportBranding.customerLogo==='string' ? data.exportBranding.customerLogo : null,
+          customerLogoName: data.exportBranding.customerLogoName || '',
+          customerName: data.exportBranding.customerName || '',
+        };
+      }
       S.demandForm=null; S.supplyForm=null;
       onDone(null, data);
     } catch(err){
