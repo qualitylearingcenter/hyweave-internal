@@ -708,6 +708,18 @@ async function refreshTownCenters(points){
   });
   if(!missing.length) return;
   missing.forEach(p=>townCenterPending.add(townCenterKey(p.centroidLat,p.centroidLon)));
+  // The backend rejects any single request over 40 points outright -- with enough hubs/HyCAS
+  // units each contributing 1-2 candidate points, a single combined batch can exceed that. Split
+  // into chunks (each handling its own pending/render cleanup) so a large network degrades to
+  // "several requests, resolved progressively" instead of "one rejected request that leaves
+  // everything in it stuck pending forever."
+  const CHUNK = 35; // comfortably under the 40 cap
+  for(let i=0;i<missing.length;i+=CHUNK){
+    await refreshTownCentersChunk(missing.slice(i, i+CHUNK));
+  }
+}
+
+async function refreshTownCentersChunk(missing){
   try{
     const resp = await fetch(TOWN_CENTER_ENDPOINT_URL, {
       method:'POST',
@@ -2664,8 +2676,8 @@ function renderResultsTab(){
   <div class="card status-card ${hubPlan.metTarget?'status-ok':''}">
     <b class="status-title">${hubPlan.metTarget?'✓':'⚠'} System-recommended hub count: ${hubPlan.k}</b>
     &nbsp;—&nbsp; ${hubPlan.metTarget
-      ? `exact minimum-cover solution over real demand and active-supply facility candidates; every demand node is within the ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails (worst case: ${fmt(hubPlan.achievedMaxDist,0)} mi, ${fmtHours(hubPlan.achievedMaxHours)}).`
-      : `the exact candidate-site model could not produce a routed plan inside both ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails with the currently available routing data. Current worst case is <b>${fmt(hubPlan.achievedMaxDist,0)} mi / ${fmtHours(hubPlan.achievedMaxHours)}</b>.`}
+      ? `every demand node is served by a hub at a real, drive-distance-validated location within the ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails (worst case: ${fmt(hubPlan.achievedMaxDist,0)} mi, ${fmtHours(hubPlan.achievedMaxHours)}).`
+      : `even at one hub per demand node (the maximum useful count), at least one node's nearest real, resolvable location is still outside the ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails. Current worst case is <b>${fmt(hubPlan.achievedMaxDist,0)} mi / ${fmtHours(hubPlan.achievedMaxHours)}</b> — adding more hubs can't shrink this further; consider relaxing the target or accepting this node as high-risk.`}
   </div>
 
   <div class="card">
