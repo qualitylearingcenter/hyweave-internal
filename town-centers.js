@@ -28,29 +28,35 @@ async function reverseTown(point) {
   url.searchParams.set('size', '1');
   url.searchParams.set('layers', 'locality,localadmin');
 
-  const res = await fetch(url);
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`Town lookup failed (${res.status}): ${detail}`);
+  // Never throws -- a rate limit or network hiccup on THIS point must not take down every other
+  // point in the same batch (they're processed together via Promise.all). Distinguishes "the
+  // search itself failed" (retryable) from "the search succeeded and genuinely found nothing"
+  // (not retryable) via the `error` field, so the frontend can tell the two apart.
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const detail = await res.text();
+      return { key: point.key, found: false, error: `Town lookup failed (${res.status}): ${detail}` };
+    }
+    const data = await res.json();
+    const feature = data.features && data.features[0];
+    if (!feature || !feature.geometry || !Array.isArray(feature.geometry.coordinates)) {
+      return { key: point.key, found: false };
+    }
+    const p = feature.properties || {};
+    const [lon, lat] = feature.geometry.coordinates;
+    return {
+      key: point.key,
+      found: true,
+      lat,
+      lon,
+      name: p.locality || p.localadmin || p.name || p.label || 'Nearest town',
+      state: p.region_a || p.region || '',
+      country: p.country_a || p.country || '',
+    };
+  } catch (err) {
+    return { key: point.key, found: false, error: err.message };
   }
-
-  const data = await res.json();
-  const feature = data.features && data.features[0];
-  if (!feature || !feature.geometry || !Array.isArray(feature.geometry.coordinates)) {
-    return { key: point.key, found: false };
-  }
-
-  const p = feature.properties || {};
-  const [lon, lat] = feature.geometry.coordinates;
-  return {
-    key: point.key,
-    found: true,
-    lat,
-    lon,
-    name: p.locality || p.localadmin || p.name || p.label || 'Nearest town',
-    state: p.region_a || p.region || '',
-    country: p.country_a || p.country || '',
-  };
 }
 
 exports.handler = async function (event) {
