@@ -20,40 +20,51 @@ function originAllowed(event) {
   }
 }
 
-async function reverseTown(point) {
+async function reverseTownAttempt(point, layers, radiusKm) {
   const url = new URL(ORS_REVERSE_URL);
   url.searchParams.set('api_key', process.env.ORS_API_KEY);
   url.searchParams.set('point.lon', String(point.lon));
   url.searchParams.set('point.lat', String(point.lat));
   url.searchParams.set('size', '1');
-  url.searchParams.set('layers', 'locality,localadmin');
+  if (layers) url.searchParams.set('layers', layers);
+  url.searchParams.set('boundary.circle.radius', String(radiusKm));
 
-  // Never throws -- a rate limit or network hiccup on THIS point must not take down every other
-  // point in the same batch (they're processed together via Promise.all). Distinguishes "the
-  // search itself failed" (retryable) from "the search succeeded and genuinely found nothing"
-  // (not retryable) via the `error` field, so the frontend can tell the two apart.
+  const res = await fetch(url);
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Town lookup failed (${res.status}): ${detail}`);
+  }
+  const data = await res.json();
+  const feature = data.features && data.features[0];
+  if (!feature || !feature.geometry || !Array.isArray(feature.geometry.coordinates)) return null;
+  const p = feature.properties || {};
+  const [lon, lat] = feature.geometry.coordinates;
+  return {
+    lat, lon,
+    name: p.locality || p.localadmin || p.name || p.label || 'Nearest town',
+    state: p.region_a || p.region || '',
+    country: p.country_a || p.country || '',
+  };
+}
+
+// Never throws -- a rate limit or network hiccup on THIS point must not take down every other
+// point in the same batch (they're processed together via Promise.all). Distinguishes "the
+// search itself failed" (retryable) from "the search succeeded and genuinely found nothing"
+// (not retryable) via the `error` field, so the frontend can tell the two apart.
+async function reverseTown(point) {
   try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      const detail = await res.text();
-      return { key: point.key, found: false, error: `Town lookup failed (${res.status}): ${detail}` };
+    // First attempt: real towns/cities specifically, generous 200km radius -- correct for the
+    // vast majority of points, including genuinely rural/remote ones.
+    let result = await reverseTownAttempt(point, 'locality,localadmin', 200);
+    if (!result) {
+      // Second attempt: drop the layer restriction (any named place at all -- neighbourhood,
+      // county, region, etc.) and widen further, so an actual "closest place" is still found
+      // for the rare point where even a 200km locality/localadmin search comes up empty,
+      // rather than giving up and falling back to raw coordinates.
+      result = await reverseTownAttempt(point, null, 400);
     }
-    const data = await res.json();
-    const feature = data.features && data.features[0];
-    if (!feature || !feature.geometry || !Array.isArray(feature.geometry.coordinates)) {
-      return { key: point.key, found: false };
-    }
-    const p = feature.properties || {};
-    const [lon, lat] = feature.geometry.coordinates;
-    return {
-      key: point.key,
-      found: true,
-      lat,
-      lon,
-      name: p.locality || p.localadmin || p.name || p.label || 'Nearest town',
-      state: p.region_a || p.region || '',
-      country: p.country_a || p.country || '',
-    };
+    if (!result) return { key: point.key, found: false };
+    return { key: point.key, found: true, ...result };
   } catch (err) {
     return { key: point.key, found: false, error: err.message };
   }

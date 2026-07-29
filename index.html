@@ -526,7 +526,7 @@ function downloadTemplate(kind){
     csv = 'name,street address,city,state,postal code,acreage,description\n1108 - Marlboro, MA - 100 Cedar Hill Street,100 Cedar Hill Street,Marlboro,MA,01752,3.70,Office/Plant\n';
     filename = 'real_estate_properties_template.csv';
   } else {
-    csv = 'name,city,lat,lon,capacity,cost,status,high pressure capable,low pressure capable\nExample Source,"Baytown, TX",29.7355,-94.9774,2000,2.10,current,yes,yes\n';
+    csv = 'name,city,lat,lon,capacity,cost,status,high pressure capable,low pressure capable,wmt transfill\nExample Source,"Baytown, TX",29.7355,-94.9774,2000,2.10,current,yes,yes,no\nExample WMT Site,"Bentonville, AR",36.3729,-94.2088,800,15,current,yes,no,yes\n';
     filename = 'supply_sources_template.csv';
   }
   const blob = new Blob([csv], {type:'text/csv'});
@@ -647,7 +647,7 @@ function importAssetCSV(file){
 let S = {
   demand: [],
   supply: [],
-  params: { trailerCap:750, trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}], costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000, hycasHasOnboardStorage: false, hycasStorageCapacity: 500, hycasCoLocateTrailer: false, },
+  params: { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage: true, hycasStorageCapacity: 50, hycasCoLocateTrailer: false, },
   activeTab: 'params',
   demandForm: null, // editing id or null
   supplyForm: null,
@@ -658,8 +658,8 @@ let S = {
   exportBranding: { companyLogo: null, companyLogoName: '', customerLogo: null, customerLogoName: '', customerName: '' },
   assetPlacement: { safetyDays:3, targetRadius:400, targetHours:6 },
   distanceOverrides: [],
-  pricing: { mode:'buy', trailerPrice: 50000, hycasPrice: 250000, nodePrice: 0,
-             trailerLeaseRate: 1500, hycasLeaseRate: 7500, nodeLeaseRate: 0, leaseTermMonths: 36,
+  pricing: { mode:'lease', trailerPrice: 1000000, hycasPrice: 3500000, nodePrice: 0,
+             trailerLeaseRate: 22000, hycasLeaseRate: 73000, nodeLeaseRate: 0, leaseTermMonths: 60,
              tierDays: '0.5,1,2,3', outputs: [], volumeDiscounts: [] },
 };
 
@@ -1182,7 +1182,7 @@ function sampleData(){
     {id:uid(), name:'Oklahoma City Regional Fill', city:'Oklahoma City, OK', lat:35.4676, lon:-97.5164, capacity:700, cost:2.60, status:'current'},
     {id:uid(), name:'Planned Beaumont H2 Plant (2027)', city:'Beaumont, TX', lat:30.0802, lon:-94.1266, capacity:1500, cost:2.05, status:'future'},
   ];
-  S.params = { trailerCap:750, trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}], costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000, hycasHasOnboardStorage:false, hycasStorageCapacity:500, hycasCoLocateTrailer:false };
+  S.params = { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage:true, hycasStorageCapacity:50, hycasCoLocateTrailer:false };
 }
 
 /* ===================== OPTIMIZATION ===================== */
@@ -1191,7 +1191,7 @@ function sampleData(){
 // every optimization function should iterate over — never S.supply directly — so toggling instantly
 // re-runs sourcing/hub placement as if those planned sources didn't exist yet.
 function activeSupply(){
-  return S.supply.filter(s => (s.status||'current')!=='future' || S.params.includeFuture);
+  return S.supply.filter(s => ((s.status||'current')!=='future' || S.params.includeFuture) && (!s.isWmtTransfill || S.params.includeWmtTransfill));
 }
 
 // Flattens both pressure-type lists into a single array of {key, label, capacity} entries --
@@ -2275,7 +2275,10 @@ function addSupplyRows(objs){
     const parseYesNo = (val)=> val===undefined||val===''?true:/^(y|yes|true|1)$/i.test(String(val).trim());
     const highPressureCapable = parseYesNo(pick(o,['high pressure capable','high_pressure_capable','hp capable']));
     const lowPressureCapable = parseYesNo(pick(o,['low pressure capable','low_pressure_capable','lp capable']));
-    S.supply.push({id:uid(),name,city:pick(o,['city','location'])||'',lat,lon,capacity,cost,status:raw==='future'||raw==='planned'?'future':'current',highPressureCapable,lowPressureCapable}); added++;
+    // Unlike pressure capability, this defaults to false for older/plain files -- a source
+    // shouldn't silently become "customer-owned" just because the column wasn't there.
+    const isWmtTransfill = /^(y|yes|true|1|wmt|wmt transfill)$/i.test(String(pick(o,['wmt transfill','wmt_transfill','category','source category'])||'').trim());
+    S.supply.push({id:uid(),name,city:pick(o,['city','location'])||'',lat,lon,capacity,cost,status:raw==='future'||raw==='planned'?'future':'current',highPressureCapable,lowPressureCapable,isWmtTransfill}); added++;
   });
   return {added,errors};
 }
@@ -2440,8 +2443,9 @@ function pressureLaneDiagnostics(){
 function renderSupplyTab(){
   const editing = S.supply.find(n=>n.id===S.supplyForm);
   const editStatus = editing ? (editing.status||'current') : 'current';
-  const current = S.supply.filter(s=>(s.status||'current')!=='future').sort((a,b)=>a.name.localeCompare(b.name));
-  const future = S.supply.filter(s=>(s.status||'current')==='future').sort((a,b)=>a.name.localeCompare(b.name));
+  const wmtTransfill = S.supply.filter(s=>s.isWmtTransfill).sort((a,b)=>a.name.localeCompare(b.name));
+  const current = S.supply.filter(s=>(s.status||'current')!=='future' && !s.isWmtTransfill).sort((a,b)=>a.name.localeCompare(b.name));
+  const future = S.supply.filter(s=>(s.status||'current')==='future' && !s.isWmtTransfill).sort((a,b)=>a.name.localeCompare(b.name));
 
   function supplyRows(list){
     if(list.length===0) return '<div class="empty">None yet.</div>';
@@ -2493,6 +2497,12 @@ function renderSupplyTab(){
           </label>
         </div>
         <div class="field">
+          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px">
+            <input id="fSWmtTransfill" type="checkbox" ${editing&&editing.isWmtTransfill?'checked':''} style="width:15px;height:15px;cursor:pointer">
+            WMT Transfill site (customer-owned)
+          </label>
+        </div>
+        <div class="field">
           <label>Status</label>
           <select id="fSStatus">
             <option value="current" ${editStatus==='current'?'selected':''}>Current — operational today</option>
@@ -2526,6 +2536,19 @@ function renderSupplyTab(){
           : 'Currently <b>excluded</b> — toggle on above to see how the network performs once these come online.'}</p>
         ${supplyRows(future)}
       </div>
+      <div class="card" style="border-color:${S.params.includeWmtTransfill?'#CDE0F5':'var(--border)'}">
+        <div class="flexbetween">
+          <h2 style="margin-bottom:0">WMT Transfill Sites (${wmtTransfill.length})</h2>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:${S.params.includeWmtTransfill?'var(--blue)':'var(--muted)'};cursor:pointer">
+            <input type="checkbox" id="chkIncludeWmtTransfill" ${S.params.includeWmtTransfill?'checked':''} style="width:16px;height:16px;cursor:pointer">
+            Include in optimization
+          </label>
+        </div>
+        <p class="desc">Customer-owned sites (not your own infrastructure) available for high-pressure gas. ${S.params.includeWmtTransfill
+          ? 'Currently <b>included</b> — sourcing, hub placement, and risk all treat these as available capacity.'
+          : 'Currently <b>excluded</b> — toggle on above to bring these into the network.'}</p>
+        ${supplyRows(wmtTransfill)}
+      </div>
     </div>
   </div>
   ${(()=>{ const diag=pressureLaneDiagnostics(); return `
@@ -2552,7 +2575,9 @@ function renderSupplyTab(){
 // so the table grows on demand rather than needing an explicit "add" button.
 function trailerCapacityTableHtml(entries){
   const list = Array.isArray(entries) ? entries : [];
-  const rows = [...list, null]; // null = the always-present blank row at the end
+  // A completely fresh/empty list starts with two blank rows, not one -- otherwise the usual
+  // "one trailing blank ready for the next entry" behavior applies once anything's filled in.
+  const rows = list.length===0 ? [null, null] : [...list, null];
   return `
     <table style="max-width:420px">
       <thead><tr><th>Trailer Capacity</th><th style="text-align:center">High Pressure</th><th style="text-align:center">Low Pressure</th><th></th></tr></thead>
@@ -2629,7 +2654,7 @@ function renderParamsTab(){
     </div>
     <div class="field">
       <label>HyCAS Target Max Response Time (hours): <span class="rangeval" id="pHycasHoursVal">${p.hycasHours} h</span></label>
-      <input id="pHycasHours" type="range" min="0.5" max="24" step="0.5" value="${p.hycasHours}">
+      <input id="pHycasHours" type="range" min="0.5" max="48" step="0.5" value="${p.hycasHours}">
     </div>
     <div class="field">
       <label>HyCAS Unit Compression Capacity (${p.unit}/day)</label>
@@ -2727,6 +2752,63 @@ function calculationReadinessBanner(){
 // add. When triggered, sizes an actual fleet the same way hub trailers are sized (aggregate
 // covered demand over the safety buffer, not just this unit's own peak node) -- this is
 // additional flex capacity for the network, not a patch for one HyCAS's rate shortfall.
+// Dedicated routing fetch for the hub-vs-HyCAS co-location comparison, kept separate from
+// placementRoadStatus on purpose. The shared refreshPlacementRoadDistances is optimized for
+// "each location has its own small set of covered nodes" (a block-diagonal request) -- giving
+// every hub the SAME full node list there would multiply the request size by hub count instead
+// of scaling linearly, and a failure here would silently flip the shared status and break the
+// "real routing" badge for hubs/HyCAS too, even when their own requests were fine. This fetches
+// a properly-sized full hub x node matrix, stores results into the same placementRoadCache
+// (still readable via placementReachDistance everywhere else), but never touches the shared
+// status flag either way.
+let hycasCoLocationRoadStatus = 'unconfigured';
+let hycasCoLocationRoadError = '';
+const hycasCoLocationRoadAttempted = new Set();
+
+async function refreshHycasCoLocationDistances(hubs, allCovered){
+  if(!ROUTE_ENDPOINT_URL || !hubs.length || !allCovered.length) return;
+  const signature = hubs.map(h=>`${h.lat.toFixed(4)},${h.lon.toFixed(4)}`).join(';') + '|' + allCovered.map(n=>n.id).join(',');
+  const allCached = hubs.every(h=>allCovered.every(n=>placementRoadCache.has(placementRoadKey(h.lat,h.lon,n.id))));
+  if(allCached){ hycasCoLocationRoadStatus='ready'; hycasCoLocationRoadError=''; return; }
+  if(hycasCoLocationRoadAttempted.has(signature)) return;
+  hycasCoLocationRoadAttempted.add(signature);
+  hycasCoLocationRoadStatus = 'loading';
+  try{
+    const controller = new AbortController();
+    const timeoutId = setTimeout(()=>controller.abort(), 25000);
+    let resp;
+    try{
+      resp = await fetch(ROUTE_ENDPOINT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          origins: hubs.map(h=>[h.lon, h.lat]),
+          destinations: allCovered.map(n=>[n.lon, n.lat]),
+        }),
+        signal: controller.signal,
+      });
+    } finally { clearTimeout(timeoutId); }
+    if(!resp.ok){
+      const errText = cleanFetchErrorText(await resp.text().catch(()=>''), resp.status);
+      throw new Error(errText || `Request failed (${resp.status})`);
+    }
+    const data = await resp.json();
+    hubs.forEach((h,hi)=>{
+      allCovered.forEach((n,ni)=>{
+        const dMi = data.distancesMiles && data.distancesMiles[hi] ? data.distancesMiles[hi][ni] : null;
+        const hHr = data.durationsHours && data.durationsHours[hi] ? data.durationsHours[hi][ni] : null;
+        if(dMi!=null && hHr!=null) placementRoadCache.set(placementRoadKey(h.lat,h.lon,n.id), {distanceMiles:dMi, durationHours:hHr});
+      });
+    });
+    hycasCoLocationRoadStatus = 'ready';
+    hycasCoLocationRoadError = '';
+  } catch(err){
+    hycasCoLocationRoadStatus = 'error';
+    hycasCoLocationRoadError = err.message;
+  }
+  setTimeout(render, 0);
+}
+
 function applyHycasTrailerCoLocation(hubs, hycasUnits){
   hycasUnits.forEach(u=>{
     u.coLocatedTrailer = false;
@@ -2740,8 +2822,7 @@ function applyHycasTrailerCoLocation(hubs, hycasUnits){
   if(!S.params.hycasCoLocateTrailer || !hubs.length || !hycasUnits.length) return;
 
   const allCovered = hycasUnits.flatMap(u=>u.covered);
-  const locations = hubs.map(h=>({lat:h.lat, lon:h.lon, covered:allCovered}));
-  maybeRefreshPlacementRoadDistances(locations);
+  refreshHycasCoLocationDistances(hubs, allCovered);
 
   hycasUnits.forEach(u=>{
     if(!u.reachIsReal) return; // wait for this unit's own real reach before comparing
@@ -3552,7 +3633,7 @@ function renderPricingTab(){
         <tbody>
         ${tiers.map(t=>`
           <tr>
-            <td><b>${fmt(t.days,t.days<1?1:0)} day${t.days===1?'':'s'}</b></td>
+            <td><b>${fmt(t.days,2)} day${t.days===1?'':'s'}</b></td>
             <td>${t.hycasCount}</td>
             <td>${t.trailers}</td>
             ${p.volumeDiscounts.length>0?`<td>${t.trailerDiscountPct>0?'<span class="tag tag-low">'+t.trailerDiscountPct+'% off</span>':'—'}</td><td>${t.hycasDiscountPct>0?'<span class="tag tag-low">'+t.hycasDiscountPct+'% off</span>':'—'}</td>`:''}
@@ -3577,8 +3658,8 @@ function renderPricingTab(){
             <td>${money(o.trailerLeaseRate,0)}</td>
             <td>${o.nodeCount}</td>
             <td>${o.hycasCount}</td>
-            <td style="white-space:normal;font-size:11px">${o.tiers.map(t=>`${fmt(t.days,t.days<1?1:0)}d: ${money(t.buyPrice,0)}`).join(' · ')}</td>
-            <td style="white-space:normal;font-size:11px">${o.tiers.map(t=>`${fmt(t.days,t.days<1?1:0)}d: ${money(t.leaseMonthly,0)}`).join(' · ')}</td>
+            <td style="white-space:normal;font-size:11px">${o.tiers.map(t=>`${fmt(t.days,2)}d: ${money(t.buyPrice,0)}`).join(' · ')}</td>
+            <td style="white-space:normal;font-size:11px">${o.tiers.map(t=>`${fmt(t.days,2)}d: ${money(t.leaseMonthly,0)}`).join(' · ')}</td>
             <td><button class="btn btn-small btn-danger" data-del-pricing="${i}">Delete</button></td>
           </tr>`).join('')}
         </tbody></table>`}
@@ -4393,14 +4474,15 @@ function attachHandlers(){
     const status = document.getElementById('fSStatus').value;
     const highPressureCapable = document.getElementById('fSHighPressure').checked;
     const lowPressureCapable = document.getElementById('fSLowPressure').checked;
+    const isWmtTransfill = document.getElementById('fSWmtTransfill').checked;
     if(!name||isNaN(lat)||isNaN(lon)||isNaN(capacity)||isNaN(cost)){ alert('Please fill in name, latitude, longitude, capacity, and cost.'); return; }
     if(!highPressureCapable&&!lowPressureCapable){ alert('A supply source must be capable of at least one pressure level.'); return; }
     if(S.supplyForm){
       const n = S.supply.find(x=>x.id===S.supplyForm);
-      Object.assign(n,{name,city,lat,lon,capacity,cost,status,highPressureCapable,lowPressureCapable});
+      Object.assign(n,{name,city,lat,lon,capacity,cost,status,highPressureCapable,lowPressureCapable,isWmtTransfill});
       S.supplyForm=null;
     } else {
-      S.supply.push({id:uid(), name, city, lat, lon, capacity, cost, status, highPressureCapable, lowPressureCapable});
+      S.supply.push({id:uid(), name, city, lat, lon, capacity, cost, status, highPressureCapable, lowPressureCapable, isWmtTransfill});
     }
     render();
   });
@@ -4408,6 +4490,8 @@ function attachHandlers(){
   if(btnCancelSupply) btnCancelSupply.addEventListener('click', ()=>{ S.supplyForm=null; render(); });
   const chkIncludeFuture = document.getElementById('chkIncludeFuture');
   if(chkIncludeFuture) chkIncludeFuture.addEventListener('change', (e)=>{ S.params.includeFuture = e.target.checked; render(); });
+  const chkIncludeWmtTransfill = document.getElementById('chkIncludeWmtTransfill');
+  if(chkIncludeWmtTransfill) chkIncludeWmtTransfill.addEventListener('change', (e)=>{ S.params.includeWmtTransfill = e.target.checked; render(); });
   const chkIncludeFutureQuick = document.getElementById('chkIncludeFutureQuick');
   if(chkIncludeFutureQuick) chkIncludeFutureQuick.addEventListener('change', (e)=>{ S.params.includeFuture = e.target.checked; render(); });
 
@@ -4792,11 +4876,11 @@ function commitParamsForm(){
     const pressure = (highCheck && highCheck.checked) ? 'high' : (lowCheck && lowCheck.checked) ? 'low' : null;
     return { capacity: cap, pressure };
   }).filter(Boolean);
-  if(!trailerCapacities.some(t=>t.pressure)){
-    // Nothing classified as either pressure -- default the first entered capacity to High
-    // Pressure rather than silently discarding everything the user typed in.
-    if(trailerCapacities.length) trailerCapacities[0].pressure = 'high';
-    else trailerCapacities.push({capacity:750, pressure:'high'});
+  if(trailerCapacities.length && !trailerCapacities.some(t=>t.pressure)){
+    // A capacity was entered but not classified -- default it to High Pressure rather than
+    // silently discarding what was typed in. But if NOTHING has been entered yet (genuinely
+    // blank), leave it blank -- don't force a default the user didn't ask for.
+    trailerCapacities[0].pressure = 'high';
   }
   S.params.trailerCapacities = trailerCapacities;
   // Retained in saved files for compatibility with earlier HyWeave builds.
@@ -4840,7 +4924,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}],costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000,hycasHasOnboardStorage:false,hycasStorageCapacity:500,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
     lastScenario = null;
     render();
   }
@@ -4912,7 +4996,7 @@ function applyScenarioFile(file, onDone){
     try{
       const data = JSON.parse(ev.target.result);
       if(!Array.isArray(data.demand) || !Array.isArray(data.supply)) throw new Error('File does not look like a saved scenario (missing demand/supply arrays).');
-      const defaults = {trailerCap:750,trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}],costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000,hycasHasOnboardStorage:false,hycasStorageCapacity:500,hycasCoLocateTrailer:false,};
+      const defaults = {trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false,};
       S.demand = data.demand.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), rate:parseFloat(n.rate), safetyDays:parseFloat(n.safetyDays)||defaults.safetyDays }));
       S.supply = data.supply.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), capacity:parseFloat(n.capacity), cost:parseFloat(n.cost), status:(n.status==='future'?'future':'current') }));
       S.params = Object.assign({}, defaults, data.params||{});
