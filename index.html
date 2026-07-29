@@ -443,6 +443,16 @@ function reprojectPathD(d, targetProj, dx, dy){
 function fmt(n,d){ if(n===undefined||n===null||isNaN(n)) return '—'; return Number(n).toLocaleString(undefined,{minimumFractionDigits:d||0,maximumFractionDigits:d||0}); }
 function money(n,d){ if(n===undefined||n===null||isNaN(n)) return '—'; return '$'+fmt(n,d===undefined?2:d); }
 function esc(s){ return (s+'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// A failed fetch to one of our own Netlify functions sometimes doesn't return OUR error text at
+// all -- if the function isn't deployed at that path, Netlify's own 404 page (a full HTML
+// document) comes back instead, and dumping that raw into the UI is useless noise. Detect that
+// case specifically and swap in a message that actually points at the fix.
+function cleanFetchErrorText(text, status){
+  const looksLikeHtml = typeof text==='string' && /^\s*<(!doctype|html)/i.test(text);
+  if(!looksLikeHtml) return text;
+  if(status===404) return `Function not found (404) — it isn't deployed at this URL. Check that the file exists in netlify/functions/ with the exact right name, and that the site has redeployed since it was added.`;
+  return `Server returned an unexpected response (status ${status}) instead of a normal error message.`;
+}
 // Natural/numeric-aware sort: "Node 2" sorts before "Node 10" (unlike plain string comparison,
 // which would put "Node 10" first since "1" < "2" lexicographically).
 function naturalCompare(a,b){
@@ -708,7 +718,7 @@ async function refreshTownCenters(points){
         lon:p.centroidLon,
       }))}),
     });
-    if(!resp.ok) throw new Error(await resp.text() || `Town lookup failed (${resp.status})`);
+    if(!resp.ok) throw new Error(cleanFetchErrorText(await resp.text().catch(()=>''), resp.status) || `Town lookup failed (${resp.status})`);
     const data=await resp.json();
     const returned=new Set();
     let addedTown=false;
@@ -768,7 +778,7 @@ async function refreshRealEstateGeocoding(){
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({items: batch.map(a=>({key:a.id, address:a.streetAddress, city:a.city, state:a.state, postalCode:a.postalCode}))}),
       });
-      if(!resp.ok) throw new Error(await resp.text().catch(()=>'') || `Request failed (${resp.status})`);
+      if(!resp.ok) throw new Error(cleanFetchErrorText(await resp.text().catch(()=>''), resp.status) || `Request failed (${resp.status})`);
       const data = await resp.json();
       const byKey = new Map((data.results||[]).map(r=>[r.key,r]));
       batch.forEach(a=>{
@@ -921,7 +931,7 @@ async function refreshRoadDistances(){
       clearTimeout(timeoutId);
     }
     if(!resp.ok){
-      const errText = await resp.text().catch(()=> '');
+      const errText = cleanFetchErrorText(await resp.text().catch(()=> ''), resp.status);
       throw new Error(errText || `Request failed (${resp.status})`);
     }
     const data = await resp.json();
@@ -1031,7 +1041,7 @@ async function refreshPlacementRoadDistances(locations){
       clearTimeout(timeoutId);
     }
     if(!resp.ok){
-      const errText = await resp.text().catch(()=> '');
+      const errText = cleanFetchErrorText(await resp.text().catch(()=> ''), resp.status);
       throw new Error(errText || `Request failed (${resp.status})`);
     }
     const data = await resp.json();
@@ -1528,10 +1538,11 @@ function placementFacilityCandidates(){
   ];
 }
 
-function nearestExistingFacility(lat,lon){
+function nearestExistingFacility(lat,lon,excludeId){
   const candidates = placementFacilityCandidates();
   let best=null, bestDist=Infinity;
   candidates.forEach(c=>{
+    if(excludeId!=null && c.id===excludeId) return;
     const d=haversineMiles(lat,lon,c.lat,c.lon);
     if(d<bestDist){best=c;bestDist=d;}
   });
@@ -1616,7 +1627,7 @@ function buildHubsFromSelectedSites(selectedSites){
     const covered=S.demand.filter((_,i)=>assignments[i]===ci);
     if(!covered.length) return null;
     const cLat=site.lat,cLon=site.lon;
-    const nearest=nearestExistingFacility(cLat,cLon);
+    const nearest=nearestExistingFacility(cLat,cLon,site.id);
     const cityRef=site.city
       ? {name:site.city,state:site.state||'',dist:0}
       : nearestCityRef(cLat,cLon);
@@ -1643,7 +1654,7 @@ function buildHubsFromSelectedSites(selectedSites){
       covered,coveredDemand,avgDist,maxDist,trailers,trailerPlan,
       avgHours:avgDist/S.params.avgSpeed,maxHours:maxDist/S.params.avgSpeed,
       stagingSource,stagingSourceDist,costPerTrailer,stagingCost:trailers*costPerTrailer,
-      candidateType:site.type,candidateId:site.id,
+      candidateType:site.type,candidateId:site.id,candidateName:site.name,
     };
   }).filter(Boolean);
 }
@@ -2070,7 +2081,7 @@ async function sendOutageNotification(sc){
     body: JSON.stringify({ subject, text: body }),
   });
   if(!resp.ok){
-    const errText = await resp.text().catch(()=> '');
+    const errText = cleanFetchErrorText(await resp.text().catch(()=> ''), resp.status);
     throw new Error(errText || `Request failed (${resp.status})`);
   }
   return true;
@@ -2747,14 +2758,15 @@ function renderResultsTab(){
 
   <div class="card">
     <div class="flexbetween"><h2 style="margin-bottom:0">Resiliency &amp; Trailer Pre-Positioning Plan</h2>${placementReachBadge()}</div>
-    <p class="desc">Each weighted cluster center is matched to its nearest real town center. Coverage and real-road reach are calculated from that town center; the nearest existing facility is shown separately for context. Confirm operational suitability and available yard space before deployment.</p>
+    <p class="desc">Every hub is placed at one of your existing demand nodes or supply sources — never a synthetic point in space — chosen to cover every demand node within your target radius/time using the fewest possible sites. Since the hub itself already <b>is</b> a real facility, "Nearest Existing Facility" shows the next-closest <b>different</b> site nearby, for backup or reference. Confirm operational suitability and available yard space before deployment.</p>
     <table><thead><tr><th>Hub #</th><th>Proposed Location</th><th>Nearest Existing Facility</th><th>Nodes Covered</th><th>Coverage Demand (${S.params.unit}/day)</th><th>Avg Reach</th><th>Max Reach</th><th>Trailers to Stage</th><th>Fill Source</th><th>One-Time Staging Cost</th></tr></thead>
     <tbody>
     ${hubs.map(h=>`
       <tr>
         <td><b>Hub ${h.idx}</b></td>
-        <td>${h.cityRef?`<b>${esc(h.cityRef.name)}, ${esc(h.cityRef.state)}</b> area`:'<b>Unnamed area</b>'}<br>
-            <span style="color:#AAB2BD">${h.lat.toFixed(3)}, ${h.lon.toFixed(3)}${h.townResolved?' · ~'+fmt(h.townOffsetMiles,0)+' mi from calculated centroid':' · locating nearest town…'}</span></td>
+        <td>${h.candidateName?`<b>${esc(h.candidateName)}</b> <span style="color:#AAB2BD">(${esc(h.candidateType)})</span><br>`:''}
+            ${h.cityRef?`<span style="color:#AAB2BD">${esc(h.cityRef.name)}, ${esc(h.cityRef.state)} area</span><br>`:''}
+            <span style="color:#AAB2BD">${h.lat.toFixed(3)}, ${h.lon.toFixed(3)}</span></td>
         <td>${h.nearestFacility?`${esc(h.nearestFacility.name)}<br><span style="color:#AAB2BD">${fmt(h.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
         <td>${h.covered.length}</td>
         <td>${fmt(h.coveredDemand)}</td>

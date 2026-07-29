@@ -1,51 +1,78 @@
-const STATIONS_URL='https://developer.nlr.gov/api/alt-fuel-stations/v1.json';
+// Public hydrogen infrastructure proxy for NREL's Alternative Fuels Data Center.
+// Keep NREL_API_KEY in Netlify environment variables; never place it in index.html.
 
-function allowedOrigin(event){
-  const headers=event.headers||{};
-  const raw=headers.origin||headers.Origin||'';
-  let origin=raw;
-  if(!origin){
-    try { origin=new URL(headers.referer||headers.Referer||'').origin; } catch (_) {}
+// The laboratory moved its developer APIs from developer.nrel.gov to developer.nlr.gov
+// and retired the old hostname on May 29, 2026.
+const NREL_URL = 'https://developer.nlr.gov/api/alt-fuel-stations/v1.json';
+
+const response = (statusCode, body, cache = 'no-store') => ({
+  statusCode,
+  headers: {
+    'Content-Type': statusCode === 200 ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
+    'Cache-Control': cache,
+  },
+  body: statusCode === 200 ? JSON.stringify(body) : String(body),
+});
+
+exports.handler = async function (event) {
+  if (event.httpMethod !== 'GET') return response(405, 'Method not allowed');
+
+  const origin = event.headers.origin || '';
+  if (process.env.APP_ORIGIN && origin) {
+    try {
+      if (new URL(origin).origin !== new URL(process.env.APP_ORIGIN).origin) {
+        return response(403, 'Origin not allowed');
+      }
+    } catch {
+      return response(500, 'APP_ORIGIN is not a valid URL');
+    }
   }
-  const allowed=new Set([
-    process.env.URL,process.env.DEPLOY_PRIME_URL,
-    ...(process.env.ALLOWED_ORIGINS||'').split(','),
-    'http://localhost:8888',
-  ].map(v=>(v||'').trim().replace(/\/$/,'')).filter(Boolean));
-  return origin&&allowed.has(origin.replace(/\/$/,''));
-}
+  if (!process.env.NREL_API_KEY) {
+    return response(500, 'Server not configured — set NREL_API_KEY in Netlify environment variables');
+  }
 
-exports.handler=async function(event) {
-  if (event.httpMethod!=='GET') return {statusCode:405,body:'Method not allowed'};
-  if (!allowedOrigin(event)) return {statusCode:403,body:'Origin not allowed'};
+  const query = new URLSearchParams({
+    fuel_type: 'HY',
+    country: 'US',
+    status: 'all',
+    access: 'all',
+    limit: 'all',
+  });
+
   try {
-    const url=new URL(STATIONS_URL);
-    url.searchParams.set('api_key',process.env.NLR_API_KEY||process.env.NREL_API_KEY||'DEMO_KEY');
-    url.searchParams.set('fuel_type','HY');
-    url.searchParams.set('country','US');
-    url.searchParams.set('limit','all');
-    const response=await fetch(url);
-    if (!response.ok) return {statusCode:502,body:`NLR station API failed (${response.status})`};
-    const data=await response.json();
-    const stations=(data.fuel_stations||[]).map(s=>({
-      id:s.id,
-      name:s.station_name,
-      address:s.street_address,
-      city:s.city,
-      state:s.state,
-      latitude:Number(s.latitude),
-      longitude:Number(s.longitude),
-      status:s.status_code,
-      access:s.access_code,
-      pressures:Array.isArray(s.hydrogen_pressures)?s.hydrogen_pressures:
-        String(s.hydrogen_pressures||'').split(',').map(x=>x.trim()).filter(Boolean),
-    })).filter(s=>Number.isFinite(s.latitude)&&Number.isFinite(s.longitude));
-    return {
-      statusCode:200,
-      headers:{'Content-Type':'application/json','Cache-Control':'public, max-age=3600'},
-      body:JSON.stringify({stations}),
-    };
+    const upstream = await fetch(`${NREL_URL}?${query}`, {
+      headers: { 'X-Api-Key': process.env.NREL_API_KEY },
+    });
+    if (!upstream.ok) {
+      const message = await upstream.text();
+      return response(502, `NREL rejected the request: ${message}`);
+    }
+
+    const data = await upstream.json();
+    const stations = (data.fuel_stations || []).map((station) => ({
+      id: station.id,
+      name: station.station_name,
+      address: station.street_address,
+      city: station.city,
+      state: station.state,
+      latitude: Number(station.latitude),
+      longitude: Number(station.longitude),
+      status: station.status_code,
+      expectedDate: station.expected_date,
+      access: station.access_code,
+      retail: station.hy_is_retail,
+      pressures: station.hy_pressures || [],
+      standards: station.hy_standards || [],
+      lastConfirmed: station.date_last_confirmed,
+      statusUrl: station.hy_status_link,
+    })).filter((station) => Number.isFinite(station.latitude) && Number.isFinite(station.longitude));
+
+    return response(
+      200,
+      { source: 'NREL Alternative Fuels Data Center', fetchedAt: new Date().toISOString(), stations },
+      'public, max-age=21600, s-maxage=21600'
+    );
   } catch (error) {
-    return {statusCode:502,body:`Hydrogen-station lookup failed: ${error.message}`};
+    return response(500, `Hydrogen station request failed: ${error.message}`);
   }
 };
