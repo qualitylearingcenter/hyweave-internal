@@ -2752,7 +2752,7 @@ function renderResultsTab(){
     ${hubs.map(h=>`
       <tr>
         <td><b>Hub ${h.idx}</b></td>
-        <td>${h.reachIsReal&&h.cityRef?`<b>${esc(h.cityRef.name)}, ${esc(h.cityRef.state)}</b> area`:'<i style="color:#AAB2BD">Locating nearest town\u2026</i>'}<br>
+        <td>${h.reachIsReal&&h.cityRef?`<b>${esc(h.cityRef.name)}, ${esc(h.cityRef.state)}</b> area`:h._candidateTowns===null?'<i style="color:var(--red)">No nearby town found \u2014 using raw coordinates</i>':'<i style="color:#AAB2BD">Locating nearest town\u2026</i>'}<br>
             <span style="color:#AAB2BD">${h.lat.toFixed(3)}, ${h.lon.toFixed(3)}</span></td>
         <td>${h.nearestFacility?`${esc(h.nearestFacility.name)}<br><span style="color:#AAB2BD">${fmt(h.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
         <td>${h.covered.length}</td>
