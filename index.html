@@ -660,7 +660,9 @@ let S = {
   distanceOverrides: [],
   pricing: { mode:'lease', trailerPrice: 1000000, hycasPrice: 3500000, nodePrice: 0,
              trailerLeaseRate: 22000, hycasLeaseRate: 73000, nodeLeaseRate: 0, leaseTermMonths: 60,
-             tierDays: '0.5,1,2,3', outputs: [], volumeDiscounts: [] },
+             tierDays: '0.5,1,2,3', outputs: [], volumeDiscounts: [],
+             doeDiscountTrailerPct: 0, doeDiscountHycasPct: 0,
+             manualHycasCount: null, manualTrailerCount: null, manualFuelCellCount: null },
 };
 
 // PORTAL_MODE locks the UI down to a single "Report an Outage" screen with no ability to add,
@@ -684,6 +686,7 @@ const GEOCODE_ENDPOINT_URL = '/.netlify/functions/geocode-addresses';
 let townCenterCache = new Map();
 let townCenterPending = new Set();
 let townCenterErrors = new Set();
+let townCenterDebugInfo = new Map(); // key -> raw backend diagnostic for a genuine "not found"
 
 function townCenterKey(lat, lon){
   return `${lat.toFixed(5)},${lon.toFixed(5)}`;
@@ -740,7 +743,7 @@ async function refreshTownCentersChunk(missing){
       else if(t.error){ /* transient (rate limit, timeout, etc.) -- leave it out of both cache and
         errors so the next render's "missing" check picks it up again automatically, rather than
         treating "the search failed" as if it meant "no real town exists here". */ }
-      else townCenterErrors.add(t.key);
+      else { townCenterErrors.add(t.key); if(t.debug) townCenterDebugInfo.set(t.key, t.debug); }
     });
     missing.forEach(p=>{
       const key=townCenterKey(p.centroidLat,p.centroidLon);
@@ -802,7 +805,15 @@ async function refreshRealEstateGeocoding(){
         const asset = S.realEstate.find(x=>x.id===a.id);
         if(!asset) return;
         if(result && result.found){ asset.lat=result.lat; asset.lon=result.lon; asset.geocodeStatus='geocoded'; asset.matchLabel=result.matchLabel||''; }
-        else { asset.geocodeStatus='error'; }
+        else if(result && result.error){
+          // Transient (rate limit, quota exhaustion, network hiccup) -- leave it pending so
+          // clicking "Geocode" again picks it back up, rather than writing off a good address
+          // just because the service was temporarily unavailable when we asked.
+          asset.geocodeDebug = result.error;
+        } else {
+          asset.geocodeStatus='error';
+          asset.geocodeDebug = result && result.debug ? `HTTP ${result.debug.status}: ${result.debug.bodyPreview}` : '';
+        }
       });
       realEstateGeocodeProgress = {done:Math.min(i+BATCH,pending.length), total:pending.length};
       setTimeout(render, 0); // show progress as each batch lands, not just at the very end
@@ -2141,7 +2152,9 @@ function findDiscountPct(product, qty){
 // a recalculation or loses the other view's numbers. Volume discounts are looked up per-tier
 // against that tier's own trailer count (and the network's constant HyCAS/node counts), so as the
 // days-of-supply sensitivity moves trailer count into a different discount bracket, the price
-// reflects it automatically.
+// reflects it automatically. The DOE discount is separate from the volume discount table and
+// applies only to the recurring lease rate, not the one-time buy price -- the two stack
+// multiplicatively (e.g. 10% volume + 10% DOE = 19% total off lease, not 20%).
 function computePricingTiers(base, tierDaysList, rates){
   return tierDaysList.map(days=>{
     const trailers = trailersForDaySupply(base.hubs, days);
@@ -2151,8 +2164,8 @@ function computePricingTiers(base, tierDaysList, rates){
     const trailerBuyUnit = rates.trailerPrice * (1 - trailerDiscountPct/100);
     const hycasBuyUnit = rates.hycasPrice * (1 - hycasDiscountPct/100);
     const nodeBuyUnit = rates.nodePrice * (1 - nodeDiscountPct/100);
-    const trailerLeaseUnit = rates.trailerLeaseRate * (1 - trailerDiscountPct/100);
-    const hycasLeaseUnit = rates.hycasLeaseRate * (1 - hycasDiscountPct/100);
+    const trailerLeaseUnit = rates.trailerLeaseRate * (1 - trailerDiscountPct/100) * (1 - (rates.doeDiscountTrailerPct||0)/100);
+    const hycasLeaseUnit = rates.hycasLeaseRate * (1 - hycasDiscountPct/100) * (1 - (rates.doeDiscountHycasPct||0)/100);
     const nodeLeaseUnit = rates.nodeLeaseRate * (1 - nodeDiscountPct/100);
     const buyPrice = trailers*trailerBuyUnit + base.hycasCount*hycasBuyUnit + base.nodeCount*nodeBuyUnit;
     const leaseMonthly = trailers*trailerLeaseUnit + base.hycasCount*hycasLeaseUnit + base.nodeCount*nodeLeaseUnit;
@@ -2160,6 +2173,32 @@ function computePricingTiers(base, tierDaysList, rates){
     return { days, trailers, hycasCount: base.hycasCount, nodeCount: base.nodeCount, buyPrice, leaseMonthly, leaseTotal,
               trailerDiscountPct, hycasDiscountPct, nodeDiscountPct };
   });
+}
+
+// Standalone comparison calculator: same rate/discount logic as the auto-generated tiers above,
+// but for user-entered HyCAS/trailer counts instead of the system-computed ones -- so a user can
+// sanity-check "what if we had exactly N of each" against what the tool actually recommends.
+function computeManualPricingResult(hycasCount, trailerCount, fuelCellCount, rates){
+  const trailerDiscountPct = findDiscountPct('trailer', trailerCount);
+  const hycasDiscountPct = findDiscountPct('hycas', hycasCount);
+  const trailerBuyUnit = rates.trailerPrice * (1 - trailerDiscountPct/100);
+  const hycasBuyUnit = rates.hycasPrice * (1 - hycasDiscountPct/100);
+  const trailerLeaseUnit = rates.trailerLeaseRate * (1 - trailerDiscountPct/100) * (1 - (rates.doeDiscountTrailerPct||0)/100);
+  const hycasLeaseUnit = rates.hycasLeaseRate * (1 - hycasDiscountPct/100) * (1 - (rates.doeDiscountHycasPct||0)/100);
+  const buyPrice = trailerCount*trailerBuyUnit + hycasCount*hycasBuyUnit;
+  const leaseMonthly = trailerCount*trailerLeaseUnit + hycasCount*hycasLeaseUnit;
+  const leaseYearly = leaseMonthly * 12;
+  const leaseDaily = leaseYearly / 365;
+  const leaseTotal = leaseMonthly * rates.leaseTermMonths;
+  const hasFuelCells = fuelCellCount>0;
+  return {
+    trailerCount, hycasCount, fuelCellCount, trailerDiscountPct, hycasDiscountPct,
+    buyPrice, leaseMonthly, leaseYearly, leaseDaily, leaseTotal,
+    buyPerFuelCell: hasFuelCells ? buyPrice/fuelCellCount : null,
+    leaseYearlyPerFuelCell: hasFuelCells ? leaseYearly/fuelCellCount : null,
+    leaseMonthlyPerFuelCell: hasFuelCells ? leaseMonthly/fuelCellCount : null,
+    leaseDailyPerFuelCell: hasFuelCells ? leaseDaily/fuelCellCount : null,
+  };
 }
 
 /* ===================== VOLUME DISCOUNT IMPORT ===================== */
@@ -2859,6 +2898,16 @@ function applyHycasTrailerCoLocation(hubs, hycasUnits){
   });
 }
 
+function townCenterDebugTooltip(points){
+  const details = points.map(p=>{
+    const key = townCenterKey(p.lat, p.lon);
+    const d = townCenterDebugInfo.get(key);
+    if(!d) return null;
+    return `(${p.lat.toFixed(3)},${p.lon.toFixed(3)}) @ ${d.radiusKm}km${d.layers?' layers='+d.layers:' no layer filter'}: HTTP ${d.status}, body: ${d.bodyPreview}`;
+  }).filter(Boolean);
+  return details.length ? details.join(' | ') : 'No diagnostic detail captured for this point.';
+}
+
 function renderResultsTab(){
   if(S.demand.length===0 || S.supply.length===0){
     return `<div class="card"><div class="empty">Add at least one demand node and one supply source to see optimization results.</div></div>`;
@@ -2980,7 +3029,7 @@ function renderResultsTab(){
     ${hubs.map(h=>`
       <tr>
         <td><b>Hub ${h.idx}</b></td>
-        <td>${h.reachIsReal&&h.cityRef?`<b>${esc(h.cityRef.name)}, ${esc(h.cityRef.state)}</b> area`:h._candidateTowns===null?'<i style="color:var(--red)">No nearby town found \u2014 using raw coordinates</i>':'<i style="color:#AAB2BD">Locating nearest town\u2026</i>'}<br>
+        <td>${h.reachIsReal&&h.cityRef?`<b>${esc(h.cityRef.name)}, ${esc(h.cityRef.state)}</b> area`:h._candidateTowns===null?`<i style="color:var(--red)" title="${esc(townCenterDebugTooltip(hubCandidatePoints(h)))}">No nearby town found \u2014 using raw coordinates (hover for detail)</i>`:'<i style="color:#AAB2BD">Locating nearest town\u2026</i>'}<br>
             <span style="color:#AAB2BD">${h.lat.toFixed(3)}, ${h.lon.toFixed(3)}</span></td>
         <td>${h.nearestFacility?`${esc(h.nearestFacility.name)}<br><span style="color:#AAB2BD">${fmt(h.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
         <td>${h.covered.length}</td>
@@ -3491,6 +3540,16 @@ function renderRealEstateTab(){
          ${realEstateGeocodeStatus==='error'?`<span style="color:var(--red);font-size:12px;margin-left:8px">${esc(realEstateGeocodeError)}</span>`:''}</div>`}
     <div class="note" style="margin-top:8px;margin-bottom:0">Geocoding uses your organization's routing service quota (OpenRouteService, same as road distances elsewhere in the app) \u2014 large lists may take a minute or two and are processed in batches, with progress shown here.</div>
   </div>`:''}
+  ${errored>0?`
+  <div class="card" style="border-color:#F3B0B0;background:#2A1A1A">
+    <b style="color:var(--red)">${errored} propert${errored===1?'y':'ies'} failed to geocode.</b> The most common reasons: your ORS geocoding quota is exhausted (this shares the same daily limit as reverse geocoding elsewhere in the app), an address is malformed, or nothing near that address matched.
+    <table style="margin-top:8px"><thead><tr><th>Property</th><th>Address</th><th>Reason</th></tr></thead>
+    <tbody>
+    ${S.realEstate.filter(a=>a.geocodeStatus==='error').slice(0,20).map(a=>`
+      <tr><td>${esc(a.name)}</td><td>${esc(a.streetAddress)}, ${esc(a.city)}, ${esc(a.state)}</td><td style="color:#AAB2BD;font-size:11px">${esc(a.geocodeDebug||'No nearby match found')}</td></tr>`).join('')}
+    </tbody></table>
+    ${errored>20?`<div class="note" style="margin-top:8px;margin-bottom:0">Showing the first 20 of ${errored} \u2014 if these all show the same HTTP status (401/402/429), that confirms a quota or key issue, not bad addresses.</div>`:''}
+  </div>`:''}
   ${geocoded>0?`
   <div class="card">
     <div class="flexbetween">
@@ -3554,7 +3613,7 @@ function renderPricingTab(){
   const tierDaysList = parseTierDays(p.tierDays);
   const rates = { trailerPrice:p.trailerPrice, hycasPrice:p.hycasPrice, nodePrice:p.nodePrice,
                    trailerLeaseRate:p.trailerLeaseRate, hycasLeaseRate:p.hycasLeaseRate, nodeLeaseRate:p.nodeLeaseRate,
-                   leaseTermMonths:p.leaseTermMonths };
+                   leaseTermMonths:p.leaseTermMonths, doeDiscountTrailerPct:p.doeDiscountTrailerPct, doeDiscountHycasPct:p.doeDiscountHycasPct };
   const tiers = base ? computePricingTiers(base, tierDaysList, rates) : [];
   const isLease = p.mode==='lease';
 
@@ -3573,6 +3632,11 @@ function renderPricingTab(){
           <div class="field"><label>Lease Rate per Node ($/month) <span style="color:#AAB2BD;font-weight:400">— optional</span></label><input id="fLeaseNode" type="number" min="0" step="50" value="${p.nodeLeaseRate}"></div>
           <div class="field"><label>Lease Term (months)</label><input id="fLeaseTerm" type="number" min="1" step="1" value="${p.leaseTermMonths}"></div>
         </div>
+        <div class="row2">
+          <div class="field"><label>DOE Discount — Trailer (%)</label><input id="fDoeDiscountTrailer" type="number" min="0" max="100" step="1" value="${p.doeDiscountTrailerPct}"></div>
+          <div class="field"><label>DOE Discount — HyCAS (%)</label><input id="fDoeDiscountHycas" type="number" min="0" max="100" step="1" value="${p.doeDiscountHycasPct}"></div>
+        </div>
+        <div class="note" style="margin-top:0">Applies only to the <b>monthly lease rate</b>, on top of (not instead of) the volume discount table below — the two stack multiplicatively. Doesn't affect the one-time buy price.</div>
 
         <div class="subhead">Buy — One-Time Purchase</div>
         <div class="row2">
@@ -3607,6 +3671,29 @@ function renderPricingTab(){
         <p class="desc">Keeps a named snapshot in this session so you can compare configurations side by side — captures <b>both</b> buy and lease numbers together, regardless of which toggle is active when you save. Saved outputs are <b>not</b> written to disk automatically — use "Export Saved Outputs" below before closing the tab if you want to keep them.</p>
         <div class="field"><label>Output Name</label><input id="fPricingName" type="text" placeholder="e.g. Baseline — Gulf Coast Q3"></div>
         <button class="btn btn-outline" id="btnSavePricing" ${!base?'disabled':''}>Save This Output</button>
+      </div>
+      <div class="card">
+        <h2>Manual Comparison Calculator</h2>
+        <p class="desc">Enter your own HyCAS unit and trailer counts to compare against the system-generated tiers above. Uses the same rates and discounts — including the DOE discount — as the rest of this tab.</p>
+        <div class="row2">
+          <div class="field"><label>HyCAS Units</label><input id="fManualHycas" type="number" min="0" step="1" value="${p.manualHycasCount!=null?p.manualHycasCount:''}" placeholder="e.g. 5"></div>
+          <div class="field"><label>Trailers</label><input id="fManualTrailer" type="number" min="0" step="1" value="${p.manualTrailerCount!=null?p.manualTrailerCount:''}" placeholder="e.g. 20"></div>
+        </div>
+        <div class="field"><label>Fuel Cells Deployed <span style="color:#AAB2BD;font-weight:400">— for the per-fuel-cell cost breakdown below</span></label><input id="fManualFuelCells" type="number" min="0" step="1" value="${p.manualFuelCellCount!=null?p.manualFuelCellCount:''}" placeholder="e.g. 100"></div>
+        <button class="btn btn-primary" id="btnCalcManual">Calculate</button>
+        ${(()=>{
+          if(p.manualHycasCount==null && p.manualTrailerCount==null) return '';
+          const mHycas = p.manualHycasCount||0, mTrailer = p.manualTrailerCount||0, mFuelCells = p.manualFuelCellCount||0;
+          const m = computeManualPricingResult(mHycas, mTrailer, mFuelCells, rates);
+          return `
+        <table style="margin-top:12px"><thead><tr><th></th><th>Buy (one-time)</th><th>Lease / Year</th><th>Lease / Month</th><th>Lease / Day</th></tr></thead>
+        <tbody>
+          <tr><td><b>Total (${mHycas} HyCAS, ${mTrailer} trailer${mTrailer===1?'':'s'})</b></td><td>${money(m.buyPrice,0)}</td><td>${money(m.leaseYearly,0)}</td><td>${money(m.leaseMonthly,0)}</td><td>${money(m.leaseDaily,2)}</td></tr>
+          ${mFuelCells>0?`<tr><td><b>Per Fuel Cell (${mFuelCells})</b></td><td>${money(m.buyPerFuelCell,2)}</td><td>${money(m.leaseYearlyPerFuelCell,2)}</td><td>${money(m.leaseMonthlyPerFuelCell,2)}</td><td>${money(m.leaseDailyPerFuelCell,2)}</td></tr>`:''}
+        </tbody></table>
+        ${mFuelCells<=0?'<div class="note">Enter a fuel cell count above to see cost per fuel cell.</div>':''}
+        ${(m.trailerDiscountPct>0||m.hycasDiscountPct>0)?`<div class="note">Volume discount applied at these counts: ${m.trailerDiscountPct>0?`${m.trailerDiscountPct}% off trailers`:''}${m.trailerDiscountPct>0&&m.hycasDiscountPct>0?', ':''}${m.hycasDiscountPct>0?`${m.hycasDiscountPct}% off HyCAS`:''}.</div>`:''}`;
+        })()}
       </div>
     </div>
     <div>
@@ -4637,6 +4724,8 @@ function attachHandlers(){
     const hycasLeaseRate = parseFloat(document.getElementById('fLeaseHycas').value);
     const nodeLeaseRate = parseFloat(document.getElementById('fLeaseNode').value);
     const leaseTermMonths = parseFloat(document.getElementById('fLeaseTerm').value);
+    const doeDiscountTrailerPct = parseFloat(document.getElementById('fDoeDiscountTrailer').value)||0;
+    const doeDiscountHycasPct = parseFloat(document.getElementById('fDoeDiscountHycas').value)||0;
     const tierDays = document.getElementById('fTierDays').value;
     if(isNaN(trailerPrice)||trailerPrice<0){ alert('Enter a valid, non-negative price per trailer.'); return; }
     if(isNaN(hycasPrice)||hycasPrice<0){ alert('Enter a valid, non-negative price per HyCAS unit.'); return; }
@@ -4645,10 +4734,28 @@ function attachHandlers(){
     if(isNaN(hycasLeaseRate)||hycasLeaseRate<0){ alert('Enter a valid, non-negative lease rate per HyCAS unit.'); return; }
     if(isNaN(nodeLeaseRate)||nodeLeaseRate<0){ alert('Enter a valid, non-negative lease rate per node.'); return; }
     if(isNaN(leaseTermMonths)||leaseTermMonths<=0){ alert('Enter a valid lease term in months (greater than 0).'); return; }
+    if(doeDiscountTrailerPct<0||doeDiscountTrailerPct>100||doeDiscountHycasPct<0||doeDiscountHycasPct>100){ alert('DOE discount percentages must be between 0 and 100.'); return; }
     if(parseTierDays(tierDays).length===0){ alert('Enter at least one valid day value, e.g. "0.5,1,2,3".'); return; }
     S.pricing.trailerPrice = trailerPrice; S.pricing.hycasPrice = hycasPrice; S.pricing.nodePrice = nodePrice;
     S.pricing.trailerLeaseRate = trailerLeaseRate; S.pricing.hycasLeaseRate = hycasLeaseRate; S.pricing.nodeLeaseRate = nodeLeaseRate;
     S.pricing.leaseTermMonths = leaseTermMonths; S.pricing.tierDays = tierDays;
+    S.pricing.doeDiscountTrailerPct = doeDiscountTrailerPct; S.pricing.doeDiscountHycasPct = doeDiscountHycasPct;
+    render();
+  });
+  const btnCalcManual = document.getElementById('btnCalcManual');
+  if(btnCalcManual) btnCalcManual.addEventListener('click', ()=>{
+    const hycasVal = document.getElementById('fManualHycas').value.trim();
+    const trailerVal = document.getElementById('fManualTrailer').value.trim();
+    const fuelCellVal = document.getElementById('fManualFuelCells').value.trim();
+    const hycasCount = hycasVal===''?null:parseFloat(hycasVal);
+    const trailerCount = trailerVal===''?null:parseFloat(trailerVal);
+    const fuelCellCount = fuelCellVal===''?null:parseFloat(fuelCellVal);
+    if(hycasCount!=null && (isNaN(hycasCount)||hycasCount<0)){ alert('Enter a valid, non-negative number of HyCAS units.'); return; }
+    if(trailerCount!=null && (isNaN(trailerCount)||trailerCount<0)){ alert('Enter a valid, non-negative number of trailers.'); return; }
+    if(fuelCellCount!=null && (isNaN(fuelCellCount)||fuelCellCount<0)){ alert('Enter a valid, non-negative number of fuel cells.'); return; }
+    S.pricing.manualHycasCount = hycasCount;
+    S.pricing.manualTrailerCount = trailerCount;
+    S.pricing.manualFuelCellCount = fuelCellCount;
     render();
   });
   document.querySelectorAll('[data-pricing-mode]').forEach(b=>b.addEventListener('click', ()=>{
@@ -4665,7 +4772,7 @@ function attachHandlers(){
     const name = (nameInput.value||'').trim() || `Output ${S.pricing.outputs.length+1}`;
     const rates = { trailerPrice:S.pricing.trailerPrice, hycasPrice:S.pricing.hycasPrice, nodePrice:S.pricing.nodePrice,
                      trailerLeaseRate:S.pricing.trailerLeaseRate, hycasLeaseRate:S.pricing.hycasLeaseRate, nodeLeaseRate:S.pricing.nodeLeaseRate,
-                     leaseTermMonths:S.pricing.leaseTermMonths };
+                     leaseTermMonths:S.pricing.leaseTermMonths, doeDiscountTrailerPct:S.pricing.doeDiscountTrailerPct, doeDiscountHycasPct:S.pricing.doeDiscountHycasPct };
     const tiers = computePricingTiers(base, tierDaysList, rates);
     S.pricing.outputs.push({
       name, savedAt: new Date().toISOString(), mode: S.pricing.mode,
@@ -4924,7 +5031,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[],doeDiscountTrailerPct:0,doeDiscountHycasPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
     lastScenario = null;
     render();
   }

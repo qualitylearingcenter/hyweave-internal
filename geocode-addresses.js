@@ -54,13 +54,23 @@ async function geocodeOne(item) {
   url.searchParams.set('size', '1');
 
   const res = await fetch(url);
+  const rawText = await res.text();
   if (!res.ok) {
-    return { key: item.key, found: false, error: `HTTP ${res.status}` };
+    // Distinct from "searched fine, found nothing" -- a non-200 here (401/402/429, etc.) is
+    // almost always quota exhaustion or a transient issue, not a bad address. Carrying the
+    // actual status/body back lets the frontend tell "retry me" apart from "this address
+    // genuinely doesn't resolve", instead of collapsing both into the same dead end.
+    return { key: item.key, found: false, error: `HTTP ${res.status}: ${rawText.slice(0, 200)}` };
   }
-  const data = await res.json();
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    return { key: item.key, found: false, error: `Non-JSON response: ${rawText.slice(0, 200)}` };
+  }
   const feature = data.features && data.features[0];
   if (!feature || !feature.geometry || !Array.isArray(feature.geometry.coordinates)) {
-    return { key: item.key, found: false };
+    return { key: item.key, found: false, debug: { status: res.status, bodyPreview: rawText.slice(0, 200) } };
   }
   const [lon, lat] = feature.geometry.coordinates;
   const props = feature.properties || {};
