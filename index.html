@@ -733,8 +733,9 @@ async function refreshTownCenters(points){
     });
     if(addedTown){
       // Town-center coordinates change both cluster coverage and routing origins. Restart the
-      // HyCAS minimum-count search and invalidate the prior centroid/facility route signature.
+      // Hub and HyCAS minimum-count searches and invalidate the prior centroid/facility route signature.
       hycasRoadSearchFloor=1;
+      hubRoadSearchFloor=1;
       placementRoadLastSignature=null;
     }
   } catch(err){
@@ -987,6 +988,8 @@ let placementRoadProvider = '';
 let placementRoadAttemptedSignatures = new Set();
 let hycasRoadSearchFloor = 1;
 let hycasRoadSearchSignature = '';
+let hubRoadSearchFloor = 1;
+let hubRoadSearchSignature = '';
 
 function placementSignature(locations){
   // locations: array of {lat, lon, covered:[{id}]}
@@ -1613,149 +1616,122 @@ function buildHubsForK(baseRisk, k){
   }).filter(Boolean);
 }
 
-function buildHubsFromSelectedSites(selectedSites){
-  const assignments=S.demand.map(n=>{
-    let best=0,bestScore=Infinity;
-    selectedSites.forEach((site,i)=>{
-      const reach=placementReachDistance(site.lat,site.lon,n);
-      const score=Math.max(reach.dist/S.params.targetRadius,reach.hours/S.params.targetHours);
-      if(score<bestScore){bestScore=score;best=i;}
+// Two candidate real-world points per hub: the geometric centroid itself, and whichever covered
+// node sits farthest from that centroid (giving a genuinely different alternative town on the
+// far side of a spread-out cluster, not just a second near-identical option).
+function hubCandidatePoints(hub){
+  const points = [{lat:hub.centroidLat, lon:hub.centroidLon}];
+  if(hub.covered.length>1){
+    let farthest=null, farthestDist=-1;
+    hub.covered.forEach(n=>{
+      const d = haversineMiles(n.lat,n.lon,hub.centroidLat,hub.centroidLon);
+      if(d>farthestDist){farthestDist=d; farthest=n;}
     });
-    return best;
-  });
-  return selectedSites.map((site,ci)=>{
-    const covered=S.demand.filter((_,i)=>assignments[i]===ci);
-    if(!covered.length) return null;
-    const cLat=site.lat,cLon=site.lon;
-    const nearest=nearestExistingFacility(cLat,cLon,site.id);
-    const cityRef=site.city
-      ? {name:site.city,state:site.state||'',dist:0}
-      : nearestCityRef(cLat,cLon);
-    const coveredDemand=covered.reduce((sum,n)=>sum+n.rate,0);
-    const dists=covered.map(n=>haversineMiles(n.lat,n.lon,cLat,cLon));
-    const avgDist=dists.reduce((a,b)=>a+b,0)/dists.length;
-    const maxDist=Math.max(...dists);
-    const avgSafety=covered.reduce((a,n)=>a+n.safetyDays,0)/covered.length;
-    const trailerPlan=trailerPlanForVolume(coveredDemand*avgSafety);
-    const trailers=trailerPlan.count;
-    let stagingSource=null,stagingSourceDist=Infinity,costPerTrailer=0;
-    activeSupply().forEach(s=>{
-      const d=haversineMiles(cLat,cLon,s.lat,s.lon);
-      const planCost=trailerPlan.totalCapacity*s.cost+trailers*S.params.costPerMile*d;
-      const cost=trailers?planCost/trailers:0;
-      if(stagingSource===null||planCost<trailers*costPerTrailer){
-        stagingSource=s;stagingSourceDist=d;costPerTrailer=cost;
-      }
-    });
-    return {
-      idx:ci+1,lat:cLat,lon:cLon,centroidLat:cLat,centroidLon:cLon,
-      townResolved:true,townOffsetMiles:0,cityRef,
-      nearestFacility:nearest.facility,nearestFacilityDist:nearest.dist,
-      covered,coveredDemand,avgDist,maxDist,trailers,trailerPlan,
-      avgHours:avgDist/S.params.avgSpeed,maxHours:maxDist/S.params.avgSpeed,
-      stagingSource,stagingSourceDist,costPerTrailer,stagingCost:trailers*costPerTrailer,
-      candidateType:site.type,candidateId:site.id,candidateName:site.name,
-    };
-  }).filter(Boolean);
+    if(farthest) points.push({lat:farthest.lat, lon:farthest.lon});
+  }
+  return points;
 }
 
-// Exact minimum set-cover model over real candidate facilities. Every active demand or supply
-// facility is a permissible hub site. The objective is the fewest hubs; a candidate covers a
-// demand node only when both configured distance and time guardrails are satisfied.
-function solveExactHubCover(){
-  const rawCandidates=placementFacilityCandidates();
-  const seen=new Set();
-  const candidates=rawCandidates.filter(c=>{
-    const key=`${c.lat.toFixed(5)},${c.lon.toFixed(5)}`;
-    if(seen.has(key)) return false;
-    seen.add(key); return true;
-  });
-  const n=S.demand.length;
-  const universe=(1n<<BigInt(n))-1n;
-  const entries=candidates.map((site,index)=>{
-    let mask=0n;
-    S.demand.forEach((node,i)=>{
-      const reach=placementReachDistance(site.lat,site.lon,node);
-      if(reach.dist<=S.params.targetRadius&&reach.hours<=S.params.targetHours) mask|=1n<<BigInt(i);
+// Per the user's explicit choice: the search for each hub's real-world location should itself be
+// driven by real drive distance, not just the final reported reach numbers. For each hub, this
+// resolves 1-2 candidate real towns and picks whichever actually has the lower drive time/distance
+// to that hub's covered nodes -- not just whichever is nearest by straight line. Reuses the same
+// town-center and road-routing caches as the rest of the app (nothing new to deploy), so repeated
+// calls across renders are cheap once resolved. Mutates hubs in place; hubs still waiting on any
+// piece of this stay on their fast geometric-centroid estimate (already set by buildHubsForK)
+// until it resolves, exactly like the existing HyCAS/Asset Placement "reachIsReal" pattern.
+function resolveHubRealLocations(hubs){
+  if(!hubs.length) return;
+
+  const allCandidatePoints = hubs.flatMap(h=>hubCandidatePoints(h).map(p=>({centroidLat:p.lat, centroidLon:p.lon})));
+  maybeRefreshTownCenters(allCandidatePoints);
+
+  hubs.forEach(hub=>{
+    const points = hubCandidatePoints(hub);
+    const resolutions = points.map(p=>resolvePlacementCenter(p.lat,p.lon));
+    const allAttempted = resolutions.every(r=>r.townResolved || townCenterErrors.has(townCenterKey(r.centroidLat,r.centroidLon)));
+    if(!allAttempted){ hub.reachIsReal=false; return; }
+    const seen = new Set();
+    const candidates = resolutions.filter(r=>r.townResolved).filter(r=>{
+      const key = `${r.lat.toFixed(3)},${r.lon.toFixed(3)}`;
+      if(seen.has(key)) return false;
+      seen.add(key); return true;
     });
-    return {site,index,mask};
-  }).filter(e=>e.mask!==0n);
-
-  // Remove duplicate coverage masks, keeping the site with the lowest aggregate reach.
-  const byMask=new Map();
-  entries.forEach(e=>{
-    const key=e.mask.toString();
-    const score=S.demand.reduce((sum,node,i)=>
-      (e.mask&(1n<<BigInt(i)))?sum+haversineMiles(e.site.lat,e.site.lon,node.lat,node.lon):sum,0);
-    if(!byMask.has(key)||score<byMask.get(key).score) byMask.set(key,{...e,score});
+    hub._candidateTowns = candidates.length ? candidates : null; // null: every candidate lookup failed
   });
-  const options=[...byMask.values()];
-  const coversNode=Array.from({length:n},()=>[]);
-  options.forEach((option,oi)=>{
-    for(let i=0;i<n;i++) if(option.mask&(1n<<BigInt(i))) coversNode[i].push(oi);
-  });
-  if(coversNode.some(list=>list.length===0)) return {selected:[],optimal:false};
 
-  // Greedy solution supplies a tight initial upper bound for branch-and-bound.
-  let greedyCovered=0n;
-  const greedy=[];
-  while(greedyCovered!==universe){
-    let best=-1,bestGain=-1;
-    options.forEach((option,oi)=>{
-      const gain=popcountBigInt(option.mask&~greedyCovered);
-      if(gain>bestGain){bestGain=gain;best=oi;}
+  const distanceLocations = hubs.filter(h=>h._candidateTowns).flatMap(hub=>
+    hub._candidateTowns.map(c=>({lat:c.lat, lon:c.lon, covered:hub.covered}))
+  );
+  maybeRefreshPlacementRoadDistances(distanceLocations);
+
+  hubs.forEach(hub=>{
+    if(!hub._candidateTowns){ hub.reachIsReal=false; return; } // town resolution failed outright -- stay on straight-line centroid
+    let allReal = true;
+    const scored = hub._candidateTowns.map(c=>{
+      const reaches = hub.covered.map(n=>placementReachDistance(c.lat,c.lon,n));
+      if(!reaches.every(r=>r.isReal)) allReal=false;
+      return {
+        candidate:c,
+        maxHours: reaches.length?Math.max(...reaches.map(r=>r.hours)):0,
+        avgHours: reaches.length?reaches.reduce((a,r)=>a+r.hours,0)/reaches.length:0,
+        maxDist: reaches.length?Math.max(...reaches.map(r=>r.dist)):0,
+        avgDist: reaches.length?reaches.reduce((a,r)=>a+r.dist,0)/reaches.length:0,
+      };
     });
-    if(best<0||bestGain===0) break;
-    greedy.push(best);greedyCovered|=options[best].mask;
-  }
-  let bestSelection=[...greedy];
-  const memo=new Map();
-  function search(covered,selected){
-    if(covered===universe){
-      if(selected.length<bestSelection.length) bestSelection=[...selected];
-      return;
-    }
-    if(selected.length>=bestSelection.length) return;
-    const memoDepth=memo.get(covered);
-    if(memoDepth!==undefined&&memoDepth<=selected.length) return;
-    memo.set(covered,selected.length);
-    const uncovered=universe&~covered;
-    let maxGain=0;
-    options.forEach(o=>{maxGain=Math.max(maxGain,popcountBigInt(o.mask&uncovered));});
-    if(!maxGain||selected.length+Math.ceil(popcountBigInt(uncovered)/maxGain)>=bestSelection.length) return;
-
-    let chosenNode=-1,branches=null;
-    for(let i=0;i<n;i++){
-      if(!(uncovered&(1n<<BigInt(i)))) continue;
-      const viable=coversNode[i].filter(oi=>(options[oi].mask&uncovered)!==0n);
-      if(branches===null||viable.length<branches.length){chosenNode=i;branches=viable;}
-    }
-    branches.sort((a,b)=>popcountBigInt(options[b].mask&uncovered)-popcountBigInt(options[a].mask&uncovered));
-    branches.forEach(oi=>search(covered|options[oi].mask,[...selected,oi]));
-  }
-  search(0n,[]);
-  return {selected:bestSelection.map(i=>options[i].site),optimal:true};
-}
-
-function popcountBigInt(value){
-  let count=0;
-  while(value){value&=value-1n;count++;}
-  return count;
+    if(!allReal){ hub.reachIsReal=false; return; }
+    scored.sort((a,b)=> a.maxHours-b.maxHours || a.avgHours-b.avgHours);
+    const winner = scored[0];
+    hub.lat = winner.candidate.lat; hub.lon = winner.candidate.lon;
+    hub.cityRef = {name:winner.candidate.name, state:winner.candidate.state, dist:0};
+    hub.townResolved = true;
+    hub.avgDist=winner.avgDist; hub.maxDist=winner.maxDist;
+    hub.avgHours=winner.avgHours; hub.maxHours=winner.maxHours;
+    hub.reachIsReal = true;
+    // Meaningful again now that the hub sits at a resolved real town rather than at the exact
+    // coordinates of one of the candidate facilities.
+    const nearest = nearestExistingFacility(hub.lat, hub.lon);
+    hub.nearestFacility = nearest.facility; hub.nearestFacilityDist = nearest.dist;
+  });
 }
 
 function computeAutoHubs(baseRisk){
   if(S.demand.length===0) return {hubs:[],k:0,achievedMaxDist:0,achievedMaxHours:0,metTarget:true,searchCapped:false,optimal:true};
-  const solution=solveExactHubCover();
-  const hubs=buildHubsFromSelectedSites(solution.selected);
-  applyPlacementReach(hubs,h=>({lat:h.lat,lon:h.lon}));
-  const achievedMaxDist=hubs.length?Math.max(...hubs.map(h=>h.maxDist)):0;
-  const achievedMaxHours=hubs.length?Math.max(...hubs.map(h=>h.maxHours)):0;
-  return {
-    hubs,k:hubs.length,achievedMaxDist,achievedMaxHours,
-    metTarget:solution.optimal&&achievedMaxDist<=S.params.targetRadius&&achievedMaxHours<=S.params.targetHours,
-    searchCapped:false,optimal:solution.optimal,
-    optimizationMethod:'Exact minimum set cover over demand and active supply facility candidates',
-  };
+  const cap = Math.min(S.demand.length, 40);
+  const searchSignature = `${networkSignature()}|${S.params.targetRadius}|${S.params.targetHours}`;
+  if(searchSignature!==hubRoadSearchSignature){
+    hubRoadSearchSignature=searchSignature;
+    hubRoadSearchFloor=1;
+  }
+  let last=null;
+  for(let k=hubRoadSearchFloor; k<=cap; k++){
+    const hubs=buildHubsForK(baseRisk,k);
+    const achievedMaxDist=hubs.length?Math.max(...hubs.map(h=>h.maxDist)):0;
+    const achievedMaxHours=hubs.length?Math.max(...hubs.map(h=>h.maxHours)):0;
+    const metTarget=achievedMaxDist<=S.params.targetRadius&&achievedMaxHours<=S.params.targetHours;
+    last={hubs,k,achievedMaxDist,achievedMaxHours,metTarget,searchCapped:false};
+    if(metTarget) break;
+  }
+  // Validates (and can upgrade the location of) the straight-line-selected hubs with real drive
+  // distance -- including the search for each hub's real-world site itself, not just its final
+  // reach numbers. If the real numbers prove the straight-line count misses the target, advance
+  // the minimum count and re-render, same pattern as Mobile HyCAS placement.
+  resolveHubRealLocations(last.hubs);
+  last.achievedMaxDist=last.hubs.length?Math.max(...last.hubs.map(h=>h.maxDist)):0;
+  last.achievedMaxHours=last.hubs.length?Math.max(...last.hubs.map(h=>h.maxHours)):0;
+  last.metTarget=last.achievedMaxDist<=S.params.targetRadius&&last.achievedMaxHours<=S.params.targetHours;
+  const roadValidated=last.hubs.length>0&&last.hubs.every(h=>h.reachIsReal);
+  if(roadValidated&&!last.metTarget&&last.k<cap){
+    hubRoadSearchFloor=last.k+1;
+    last.searchCapped=false;
+    setTimeout(render,0);
+  } else {
+    last.searchCapped=!last.metTarget&&last.k>=cap;
+  }
+  last.roadValidated=roadValidated;
+  last.optimal=true;
+  last.optimizationMethod='Weighted clustering, validated and located by real drive distance to 1-2 candidate real towns per hub';
+  return last;
 }
 
 /* ===================== MOBILE HyCAS PLACEMENT ===================== */
@@ -2758,14 +2734,13 @@ function renderResultsTab(){
 
   <div class="card">
     <div class="flexbetween"><h2 style="margin-bottom:0">Resiliency &amp; Trailer Pre-Positioning Plan</h2>${placementReachBadge()}</div>
-    <p class="desc">Every hub is placed at one of your existing demand nodes or supply sources — never a synthetic point in space — chosen to cover every demand node within your target radius/time using the fewest possible sites. Since the hub itself already <b>is</b> a real facility, "Nearest Existing Facility" shows the next-closest <b>different</b> site nearby, for backup or reference. Confirm operational suitability and available yard space before deployment.</p>
+    <p class="desc">Each hub's demand cluster is found by weighted clustering, then its actual site is chosen by comparing real drive distance/time from 1-2 candidate real towns to that cluster's nodes — not just picking whichever is nearest on a map. "Nearest Existing Facility" shows the closest of your own demand nodes or supply sources to that resolved town, for backup or reference. Confirm operational suitability and available yard space before deployment.</p>
     <table><thead><tr><th>Hub #</th><th>Proposed Location</th><th>Nearest Existing Facility</th><th>Nodes Covered</th><th>Coverage Demand (${S.params.unit}/day)</th><th>Avg Reach</th><th>Max Reach</th><th>Trailers to Stage</th><th>Fill Source</th><th>One-Time Staging Cost</th></tr></thead>
     <tbody>
     ${hubs.map(h=>`
       <tr>
         <td><b>Hub ${h.idx}</b></td>
-        <td>${h.candidateName?`<b>${esc(h.candidateName)}</b> <span style="color:#AAB2BD">(${esc(h.candidateType)})</span><br>`:''}
-            ${h.cityRef?`<span style="color:#AAB2BD">${esc(h.cityRef.name)}, ${esc(h.cityRef.state)} area</span><br>`:''}
+        <td>${h.reachIsReal&&h.cityRef?`<b>${esc(h.cityRef.name)}, ${esc(h.cityRef.state)}</b> area`:'<i style="color:#AAB2BD">Locating nearest town\u2026</i>'}<br>
             <span style="color:#AAB2BD">${h.lat.toFixed(3)}, ${h.lon.toFixed(3)}</span></td>
         <td>${h.nearestFacility?`${esc(h.nearestFacility.name)}<br><span style="color:#AAB2BD">${fmt(h.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
         <td>${h.covered.length}</td>
