@@ -526,7 +526,7 @@ function downloadTemplate(kind){
     csv = 'name,street address,city,state,postal code,acreage,description\n1108 - Marlboro, MA - 100 Cedar Hill Street,100 Cedar Hill Street,Marlboro,MA,01752,3.70,Office/Plant\n';
     filename = 'real_estate_properties_template.csv';
   } else {
-    csv = 'name,city,lat,lon,capacity,cost,status\nExample Source,"Baytown, TX",29.7355,-94.9774,2000,2.10,current\n';
+    csv = 'name,city,lat,lon,capacity,cost,status,high pressure capable,low pressure capable\nExample Source,"Baytown, TX",29.7355,-94.9774,2000,2.10,current,yes,yes\n';
     filename = 'supply_sources_template.csv';
   }
   const blob = new Blob([csv], {type:'text/csv'});
@@ -647,7 +647,7 @@ function importAssetCSV(file){
 let S = {
   demand: [],
   supply: [],
-  params: { trailerCap:750, trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}], costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000, hycasHasOnboardStorage: false, hycasStorageCapacity: 500, },
+  params: { trailerCap:750, trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}], costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000, hycasHasOnboardStorage: false, hycasStorageCapacity: 500, hycasCoLocateTrailer: false, },
   activeTab: 'params',
   demandForm: null, // editing id or null
   supplyForm: null,
@@ -737,6 +737,9 @@ async function refreshTownCentersChunk(missing){
     (data.towns||[]).forEach(t=>{
       returned.add(t.key);
       if(t.found){ townCenterCache.set(t.key,t); addedTown=true; }
+      else if(t.error){ /* transient (rate limit, timeout, etc.) -- leave it out of both cache and
+        errors so the next render's "missing" check picks it up again automatically, rather than
+        treating "the search failed" as if it meant "no real town exists here". */ }
       else townCenterErrors.add(t.key);
     });
     missing.forEach(p=>{
@@ -1179,7 +1182,7 @@ function sampleData(){
     {id:uid(), name:'Oklahoma City Regional Fill', city:'Oklahoma City, OK', lat:35.4676, lon:-97.5164, capacity:700, cost:2.60, status:'current'},
     {id:uid(), name:'Planned Beaumont H2 Plant (2027)', city:'Beaumont, TX', lat:30.0802, lon:-94.1266, capacity:1500, cost:2.05, status:'future'},
   ];
-  S.params = { trailerCap:750, trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}], costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000, hycasHasOnboardStorage:false, hycasStorageCapacity:500 };
+  S.params = { trailerCap:750, trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}], costPerMile:6, avgSpeed:48, safetyDays:1, targetRadius:250, targetHours:4, unit:'kg', includeFuture:true, hycasRadius:400, hycasHours:6, hycasCapacity:1000, hycasHasOnboardStorage:false, hycasStorageCapacity:500, hycasCoLocateTrailer:false };
 }
 
 /* ===================== OPTIMIZATION ===================== */
@@ -1402,7 +1405,8 @@ function computeBaseRisk(sourcing){
 // (1) full trailers at the assigned staging hub, (2) capacity-qualified direct supply,
 // (3) another staged hub. Any path inside both original guardrails is Low risk (green).
 const RISK_MARGIN_THRESHOLD = 0.75; // retained for backward-compatible exports/tooltips
-function computeFinalRisk(baseRisk, hubs){
+function computeFinalRisk(baseRisk, hubs, coLocatedHycasUnits){
+  const coLocated = (coLocatedHycasUnits||[]).filter(u=>u.coLocatedTrailer);
   const coverage = {};
   hubs.forEach(h=>{
     h.covered.forEach(n=>{
@@ -1433,14 +1437,29 @@ function computeFinalRisk(baseRisk, hubs){
       .sort((a,b)=>Math.max(a.dist/S.params.targetRadius,a.hours/S.params.targetHours)-
                     Math.max(b.dist/S.params.targetRadius,b.hours/S.params.targetHours));
     const alternate=alternateHubs[0]||null;
+    // An additional trailer co-located with a nearby HyCAS unit is a real, staged resource just
+    // like a hub -- if it puts this node within target radius/time, it counts the same way an
+    // alternate hub would, and can mitigate what would otherwise be a High-risk classification.
+    const coLocatedNearby = coLocated
+      .map(u=>{
+        const dist=haversineMiles(n.lat,n.lon,u.lat,u.lon);
+        const hours=dist/S.params.avgSpeed;
+        return {hycasIdx:u.idx,dist,hours,within:dist<=S.params.targetRadius && hours<=S.params.targetHours};
+      })
+      .filter(x=>x.within)
+      .sort((a,b)=>Math.max(a.dist/S.params.targetRadius,a.hours/S.params.targetHours)-
+                    Math.max(b.dist/S.params.targetRadius,b.hours/S.params.targetHours));
+    const coLocatedBest = coLocatedNearby[0]||null;
 
-    let servicedVia, tierDist, tierHours, selectedHubIdx=null;
+    let servicedVia, tierDist, tierHours, selectedHubIdx=null, selectedHycasIdx=null;
     if(hubWithin){
       servicedVia='hub'; tierDist=cov.dist; tierHours=cov.hours; selectedHubIdx=cov.hubIdx;
     } else if(sourceWithin){
       servicedVia='source'; tierDist=base.directDist; tierHours=base.directHours;
     } else if(alternate){
       servicedVia='alternateHub'; tierDist=alternate.dist; tierHours=alternate.hours; selectedHubIdx=alternate.hubIdx;
+    } else if(coLocatedBest){
+      servicedVia='coLocatedHycas'; tierDist=coLocatedBest.dist; tierHours=coLocatedBest.hours; selectedHycasIdx=coLocatedBest.hycasIdx;
     } else {
       servicedVia=cov?'hub':(base.primarySourceId?'source':'none');
       tierDist=cov?cov.dist:base.primaryDist;
@@ -1448,13 +1467,13 @@ function computeFinalRisk(baseRisk, hubs){
       selectedHubIdx=cov?cov.hubIdx:null;
     }
 
-    const selectedWithin=hubWithin||sourceWithin||!!alternate;
+    const selectedWithin=hubWithin||sourceWithin||!!alternate||!!coLocatedBest;
     const tier=(hasShortfall||!selectedWithin)?'High':'Low';
     combined[n.id] = {
       ...base,
       hubIdx: cov?cov.hubIdx:null, hubDist: cov?cov.dist:null, hubHours: cov?cov.hours:null,
       withinDeliveryRadius: hubWithin, sourceWithinTarget: sourceWithin,
-      alternateHubWithinTarget:!!alternate, selectedHubIdx, selectedWithinTarget:selectedWithin,
+      alternateHubWithinTarget:!!alternate, coLocatedHycasWithinTarget:!!coLocatedBest, selectedHubIdx, selectedHycasIdx, selectedWithinTarget:selectedWithin,
       servicedVia, tierDist, tierHours, tier,
     };
   });
@@ -1487,6 +1506,8 @@ function riskReasons(r){
   } else {
     if(r.servicedVia==='source'){
       reasons.push(`Serviced directly from supply source${srcName?' ('+srcName+')':''}: ${fmt(r.tierDist,0)} mi / ${fmtHours(r.tierHours)} — its hub (Hub ${r.hubIdx}) alone would have put it outside target, so the source route was used instead`);
+    } else if(r.servicedVia==='coLocatedHycas'){
+      reasons.push(`Serviced via an additional trailer co-located with Mobile HyCAS Unit ${r.selectedHycasIdx}: ${fmt(r.tierDist,0)} mi / ${fmtHours(r.tierHours)} — its hub alone would have put it outside target`);
     } else {
       reasons.push(`Serviced via Hub ${r.hubIdx}: ${fmt(r.tierDist,0)} mi / ${fmtHours(r.tierHours)}`);
     }
@@ -1918,17 +1939,20 @@ function computeAssetPlacement(){
   return { compression: forType('compression'), storage: forType('storage') };
 }
 
-function computeKPIs(sourcing, riskMap, hubs){
+function computeKPIs(sourcing, riskMap, hubs, hycasUnits){
   const totalDemand = S.demand.reduce((a,n)=>a+n.rate,0);
   const totalCost = sourcing.flows.reduce((a,f)=>a+f.totalCost,0);
-  const totalStagingCost = hubs.reduce((a,h)=>a+h.stagingCost,0);
+  const coLocatedPlans = (hycasUnits||[]).filter(u=>u.coLocatedTrailerPlan).map(u=>u.coLocatedTrailerPlan);
+  const totalStagingCost = hubs.reduce((a,h)=>a+h.stagingCost,0) + (hycasUnits||[]).reduce((a,u)=>a+(u.coLocatedStagingCost||0),0);
   const unmetTotal = Object.values(sourcing.nodeSummary).reduce((a,n)=>a+n.unmet,0);
   const highRisk = Object.values(riskMap).filter(r=>r.tier==='High').length;
-  const totalTrailers = hubs.reduce((a,h)=>a+h.trailers,0);
+  const totalTrailers = hubs.reduce((a,h)=>a+h.trailers,0) + coLocatedPlans.reduce((a,p)=>a+p.count,0);
+  const totalMobileRefuelers = hubs.reduce((a,h)=>a+(h.trailerPlan?h.trailerPlan.mobileRefuelerCount:0),0)
+    + coLocatedPlans.reduce((a,p)=>a+p.mobileRefuelerCount,0);
   const totalDailyTrips = sourcing.flows.reduce((a,f)=>a+f.trips,0);
   return {
     totalDemand, totalCost, totalStagingCost, avgCost: totalDemand>0?totalCost/ (totalDemand-unmetTotal || totalDemand):0,
-    unmetTotal, highRisk, totalTrailers, totalDailyTrips
+    unmetTotal, highRisk, totalTrailers, totalMobileRefuelers, totalDailyTrips
   };
 }
 
@@ -2246,7 +2270,12 @@ function addSupplyRows(objs){
     const cost=parseFloat(pick(o,['cost','unit cost','unit_cost']));
     if(!name||isNaN(lat)||isNaN(lon)||isNaN(capacity)||isNaN(cost)){ errors.push(`row ${idx+2}`); return; }
     const raw=(pick(o,['status'])||'current').toLowerCase().trim();
-    S.supply.push({id:uid(),name,city:pick(o,['city','location'])||'',lat,lon,capacity,cost,status:raw==='future'||raw==='planned'?'future':'current'}); added++;
+    // Older files won't have these two columns at all -- default to capable=true so an import
+    // that predates this feature doesn't silently strand every existing source at zero capability.
+    const parseYesNo = (val)=> val===undefined||val===''?true:/^(y|yes|true|1)$/i.test(String(val).trim());
+    const highPressureCapable = parseYesNo(pick(o,['high pressure capable','high_pressure_capable','hp capable']));
+    const lowPressureCapable = parseYesNo(pick(o,['low pressure capable','low_pressure_capable','lp capable']));
+    S.supply.push({id:uid(),name,city:pick(o,['city','location'])||'',lat,lon,capacity,cost,status:raw==='future'||raw==='planned'?'future':'current',highPressureCapable,lowPressureCapable}); added++;
   });
   return {added,errors};
 }
@@ -2385,6 +2414,29 @@ function renderDemandTab(){
 }
 
 /* ===================== RENDER: SUPPLY TAB ===================== */
+// Shows how many active supply sources can fill each pressure level, and flags demand nodes
+// whose primary sourcing assignment relies on a High-Pressure-only source over a long distance
+// -- a potential bottleneck if that capability is genuinely scarce across the network. This is
+// diagnostic/informational only: sourcing cost minimization and refill logic don't factor
+// pressure capability in yet.
+function pressureLaneDiagnostics(){
+  const active = activeSupply();
+  const hpCount = active.filter(s=>s.highPressureCapable!==false).length;
+  const lpCount = active.filter(s=>s.lowPressureCapable!==false).length;
+  if(S.demand.length===0 || active.length===0) return {hpCount, lpCount, total:active.length, longLanes:[]};
+  const sourcing = computeSourcing();
+  const longLanes = S.demand.map(n=>{
+    const summary = sourcing.nodeSummary[n.id];
+    const primary = summary ? summary.primary : null;
+    if(!primary) return null;
+    const source = S.supply.find(s=>s.id===primary.sourceId);
+    if(!source) return null;
+    const isHpOnly = (source.highPressureCapable!==false) && (source.lowPressureCapable===false);
+    return { nodeName:n.name, sourceName:source.name, dist:primary.dist, isHpOnly };
+  }).filter(Boolean).filter(x=>x.isHpOnly).sort((a,b)=>b.dist-a.dist);
+  return {hpCount, lpCount, total:active.length, longLanes};
+}
+
 function renderSupplyTab(){
   const editing = S.supply.find(n=>n.id===S.supplyForm);
   const editStatus = editing ? (editing.status||'current') : 'current';
@@ -2430,6 +2482,17 @@ function renderSupplyTab(){
           <div class="field"><label>Unit Cost ($/${S.params.unit})</label><input id="fSCost" type="number" step="0.01" value="${editing?editing.cost:''}"></div>
         </div>
         <div class="field">
+          <label>Pressure Capability</label>
+          <label style="display:flex;align-items:center;gap:7px;margin-bottom:6px;cursor:pointer;font-size:13px">
+            <input id="fSHighPressure" type="checkbox" ${editing?(editing.highPressureCapable!==false?'checked':''):'checked'} style="width:15px;height:15px;cursor:pointer">
+            High Pressure capable
+          </label>
+          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px">
+            <input id="fSLowPressure" type="checkbox" ${editing?(editing.lowPressureCapable!==false?'checked':''):'checked'} style="width:15px;height:15px;cursor:pointer">
+            Low Pressure capable
+          </label>
+        </div>
+        <div class="field">
           <label>Status</label>
           <select id="fSStatus">
             <option value="current" ${editStatus==='current'?'selected':''}>Current — operational today</option>
@@ -2464,7 +2527,20 @@ function renderSupplyTab(){
         ${supplyRows(future)}
       </div>
     </div>
-  </div>`;
+  </div>
+  ${(()=>{ const diag=pressureLaneDiagnostics(); return `
+  <div class="card">
+    <h2>Pressure Capability &amp; Lane Analysis</h2>
+    <p class="desc">How many active supply sources can fill each pressure level, and which demand nodes currently rely on a High-Pressure-only source over a long distance -- a potential bottleneck if that capability is scarce across your network. Diagnostic only for now: sourcing cost minimization and refill logic don't factor pressure capability in yet.</p>
+    <div class="kpirow">
+      <div class="kpi ${diag.total>0&&diag.hpCount<diag.total?'warn':''}"><div class="val">${diag.hpCount} / ${diag.total}</div><div class="lbl">Sources High Pressure Capable</div></div>
+      <div class="kpi"><div class="val">${diag.lpCount} / ${diag.total}</div><div class="lbl">Sources Low Pressure Capable</div></div>
+    </div>
+    ${diag.longLanes.length?`
+    <table><thead><tr><th>Demand Node</th><th>Assigned Source (High-Pressure-only)</th><th>Distance</th></tr></thead>
+    <tbody>${diag.longLanes.map(l=>`<tr><td>${esc(l.nodeName)}</td><td>${esc(l.sourceName)}</td><td>${fmt(l.dist,0)} mi</td></tr>`).join('')}</tbody></table>`
+    :'<div class="note">No demand node is currently primarily sourced from a High-Pressure-only supplier.</div>'}
+  </div>`; })()}`;
 }
 
 /* ===================== RENDER: PARAMS TAB ===================== */
@@ -2572,6 +2648,13 @@ function renderParamsTab(){
       <input id="pHycasStorageCapacity" type="number" min="1" step="10" value="${p.hycasStorageCapacity}">
     </div>`:''}
     <div class="field">
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px;font-weight:600">
+        <input id="chkHycasCoLocateTrailer" type="checkbox" ${p.hycasCoLocateTrailer?'checked':''} style="width:16px;height:16px;cursor:pointer">
+        Allow Additional Trailer Co-location with Mobile HyCAS
+      </label>
+      <div class="note" style="margin-top:6px">When enabled, each HyCAS unit's own real reach to its covered nodes is compared against the nearest hub's real reach to those same nodes. If reaching those nodes from the nearest hub would send a trailer beyond your <b>Target Delivery Radius / Time</b> above, and the HyCAS is genuinely closer, an <b>additional</b> trailer is co-located with that HyCAS instead — sized the same way hub fleets are (covered demand over your safety-stock days), so it adds real, additional flex capacity to the network rather than moving an existing trailer out past its intended radius. If the nearest hub is already within target, nothing changes — the existing hub mechanism already covers it, so no extra trailer gets added. This is independent of the HyCAS's own compression-rate sufficiency check below.</div>
+    </div>
+    <div class="field">
       <div class="note">These are independent from the trailer targets above — a Mobile HyCAS unit responds to a <b>compression failure</b> at a node, not a supply outage, so it's a separate coverage problem with its own radius/time budget. The tool recommends the <b>smallest number of units and locations</b> that put every demand node within both targets of at least one unit. Because a compression failure hits one node at a time (not a shared volume draw like trailers), a unit's capacity only needs to cover the single largest node it might be dispatched to — check the Capacity Check column in Optimization Results if you raise a node's consumption rate significantly. Onboard storage is captured here for reference and isn't yet factored into that capacity check — say the word if you want it wired in.</div>
     </div>
     <button class="btn btn-primary" id="btnSaveParams">Apply &amp; Recalculate</button>
@@ -2631,6 +2714,70 @@ function calculationReadinessBanner(){
   </div>`;
 }
 
+// When enabled, compares each HyCAS unit's own real reach to its covered nodes against the
+// nearest hub's real reach to those same nodes -- whichever is shorter determines whether the
+// accompanying trailer should come from that hub, or be co-located directly with the HyCAS
+// instead. A co-located trailer's volume acts as a buffer (same reasoning as trailer staging
+// and onboard storage elsewhere: volume vs. rate x safety days), not a literal addition to the
+// HyCAS's continuous compression rate -- those are different units and can't just be summed.
+// Additional trailer co-location, kept deliberately separate from the HyCAS's own compression-
+// rate sufficiency check (that's a different question). Triggers specifically when relying on
+// the nearest hub would send a trailer beyond the network's target delivery radius/time -- if
+// the hub is already within target, the existing hub mechanism already does the job, nothing to
+// add. When triggered, sizes an actual fleet the same way hub trailers are sized (aggregate
+// covered demand over the safety buffer, not just this unit's own peak node) -- this is
+// additional flex capacity for the network, not a patch for one HyCAS's rate shortfall.
+function applyHycasTrailerCoLocation(hubs, hycasUnits){
+  hycasUnits.forEach(u=>{
+    u.coLocatedTrailer = false;
+    u.coLocatedTrailerPlan = null;
+    u.coLocatedStagingSource = null;
+    u.coLocatedStagingSourceDist = 0;
+    u.coLocatedStagingCost = 0;
+    u.coLocationHubDist = null;
+    u.coLocationHubExceedsTarget = null;
+  });
+  if(!S.params.hycasCoLocateTrailer || !hubs.length || !hycasUnits.length) return;
+
+  const allCovered = hycasUnits.flatMap(u=>u.covered);
+  const locations = hubs.map(h=>({lat:h.lat, lon:h.lon, covered:allCovered}));
+  maybeRefreshPlacementRoadDistances(locations);
+
+  hycasUnits.forEach(u=>{
+    if(!u.reachIsReal) return; // wait for this unit's own real reach before comparing
+    let bestHubMaxHours = Infinity, bestHubMaxDist = Infinity, allHubDistsReal = true;
+    hubs.forEach(h=>{
+      const reaches = u.covered.map(n=>placementReachDistance(h.lat,h.lon,n));
+      if(!reaches.every(r=>r.isReal)) allHubDistsReal = false;
+      const hubMaxHours = reaches.length?Math.max(...reaches.map(r=>r.hours)):Infinity;
+      const hubMaxDist = reaches.length?Math.max(...reaches.map(r=>r.dist)):Infinity;
+      if(hubMaxHours<bestHubMaxHours){ bestHubMaxHours=hubMaxHours; bestHubMaxDist=hubMaxDist; }
+    });
+    if(!allHubDistsReal) return; // wait for the hub-comparison distances to resolve too
+    u.coLocationHubDist = bestHubMaxHours;
+    const hubExceedsTarget = bestHubMaxDist>S.params.targetRadius || bestHubMaxHours>S.params.targetHours;
+    u.coLocationHubExceedsTarget = hubExceedsTarget;
+    if(hubExceedsTarget && u.maxHours<bestHubMaxHours){
+      u.coLocatedTrailer = true;
+      const coveredDemand = u.covered.reduce((a,n)=>a+n.rate,0);
+      u.coLocatedTrailerPlan = trailerPlanForVolume(coveredDemand*S.params.safetyDays);
+      let stagingSource=null, stagingSourceDist=Infinity, costPerTrailer=0;
+      const trailers = u.coLocatedTrailerPlan.count;
+      activeSupply().forEach(s=>{
+        const d = haversineMiles(u.lat,u.lon,s.lat,s.lon);
+        const planCost = u.coLocatedTrailerPlan.totalCapacity*s.cost + trailers*S.params.costPerMile*d;
+        const perTrailer = trailers?planCost/trailers:0;
+        if(stagingSource===null || planCost<trailers*costPerTrailer){
+          stagingSource=s; stagingSourceDist=d; costPerTrailer=perTrailer;
+        }
+      });
+      u.coLocatedStagingSource = stagingSource;
+      u.coLocatedStagingSourceDist = stagingSourceDist;
+      u.coLocatedStagingCost = trailers*costPerTrailer;
+    }
+  });
+}
+
 function renderResultsTab(){
   if(S.demand.length===0 || S.supply.length===0){
     return `<div class="card"><div class="empty">Add at least one demand node and one supply source to see optimization results.</div></div>`;
@@ -2639,10 +2786,11 @@ function renderResultsTab(){
   const baseRisk = computeBaseRisk(sourcing);
   const hubPlan = computeAutoHubs(baseRisk);
   const hubs = hubPlan.hubs;
-  const risk = computeFinalRisk(baseRisk, hubs);
-  const kpi = computeKPIs(sourcing, risk, hubs);
   const hycasPlan = computeAutoHycas(baseRisk);
   const hycasUnits = hycasPlan.units;
+  applyHycasTrailerCoLocation(hubs, hycasUnits);
+  const risk = computeFinalRisk(baseRisk, hubs, hycasUnits);
+  const kpi = computeKPIs(sourcing, risk, hubs, hycasUnits);
   const hycasConfirmed = hycasPlan.metTarget && hycasPlan.roadValidated;
   lastComputed = {sourcing, risk, hubs, hubPlan, kpi, hycasPlan, hycasUnits};
 
@@ -2666,10 +2814,9 @@ function renderResultsTab(){
   <div class="kpirow">
     <div class="kpi"><div class="val">${fmt(kpi.totalDemand)}</div><div class="lbl">Potential Total Daily Demand (${S.params.unit})</div></div>
     <div class="kpi"><div class="val">${money(kpi.totalStagingCost,0)}</div><div class="lbl">One-Time Trailer Staging Cost</div></div>
-    <div class="kpi"><div class="val">${money(kpi.avgCost)}</div><div class="lbl">Avg Landed Cost / ${S.params.unit}</div></div>
-    <div class="kpi"><div class="val">${kpi.totalDailyTrips}</div><div class="lbl">Full Trailer Trips / Day</div></div>
     <div class="kpi ${kpi.highRisk>0?'warn':''}"><div class="val">${kpi.highRisk}</div><div class="lbl">High-Risk Nodes</div></div>
     <div class="kpi"><div class="val">${kpi.totalTrailers}</div><div class="lbl">Recommended Staged Trailers</div></div>
+    <div class="kpi"><div class="val">${kpi.totalMobileRefuelers}</div><div class="lbl">Mobile Refueler Count</div></div>
     <div class="kpi"><div class="val">${hycasPlan.k}</div><div class="lbl">Mobile HyCAS Units</div></div>
   </div>
   ${kpi.unmetTotal>0?`<div class="card" style="border-color:#F3C6C6;background:#FEF6F6"><b style="color:var(--red)">⚠ Supply shortfall:</b> ${fmt(kpi.unmetTotal)} ${S.params.unit}/day of demand cannot be met by current supply source capacity. Consider adding capacity or new sources.</div>`:''}
@@ -2783,7 +2930,7 @@ function renderResultsTab(){
         ? `all ${hycasPlan.k} available facility location(s) were evaluated; best achievable worst case is <b>${fmt(hycasPlan.achievedMaxDist,0)} mi / ${fmtHours(hycasPlan.achievedMaxHours)}</b>, still short of your ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h targets. Consider adding candidate staging facilities or adjusting the targets.`
         : `real-road validation is expanding the search beyond ${hycasPlan.k} town-center unit(s). Current worst case is <b>${fmt(hycasPlan.achievedMaxDist,0)} mi / ${fmtHours(hycasPlan.achievedMaxHours)}</b> versus your ${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h targets.`}
     </div>
-    <table><thead><tr><th>Unit #</th><th>Proposed Location</th><th>Nearest Existing Facility</th><th>Nodes Covered</th><th>Avg Reach</th><th>Max Reach</th><th>Largest Covered Node</th><th>Capacity Check</th></tr></thead>
+    <table><thead><tr><th>Unit #</th><th>Proposed Location</th><th>Nearest Existing Facility</th><th>Nodes Covered</th><th>Avg Reach</th><th>Max Reach</th><th>Largest Covered Node</th><th>Capacity Check</th>${S.params.hycasCoLocateTrailer?'<th>Additional Trailer Flex</th>':''}</tr></thead>
     <tbody>
     ${hycasUnits.map(u=>`
       <tr>
@@ -2796,6 +2943,11 @@ function renderResultsTab(){
         <td>${fmt(u.maxDist,0)} mi <span style="color:#AAB2BD">(${fmtHours(u.maxHours)})</span></td>
         <td>${fmt(u.maxNodeRate)} ${S.params.unit}/day</td>
         <td>${u.capacitySufficient?'<span class="tag tag-low">Sufficient</span>':'<span class="tag tag-high">Insufficient</span>'}</td>
+        ${S.params.hycasCoLocateTrailer?`<td>${
+          u.coLocatedTrailer?`<span class="tag tag-low">+Additional trailer co-located</span><br><span style="color:#AAB2BD;font-size:11px">nearest hub would exceed target (${fmtHours(u.coLocationHubDist)}) — this unit reaches it in ${fmtHours(u.maxHours)}<br>${u.coLocatedTrailerPlan.label}, ${money(u.coLocatedStagingCost,0)}</span>`
+          : u.coLocationHubDist!=null?`<span class="tag tag-med">Nearest hub within target</span><br><span style="color:#AAB2BD;font-size:11px">${fmtHours(u.coLocationHubDist)} from nearest hub — no additional trailer needed</span>`
+          : `<span style="color:#AAB2BD;font-size:11px">Comparing…</span>`
+        }</td>`:''}
       </tr>`).join('')}
     </tbody></table>
     <div class="note">Unit count and locations are chosen to cover every demand node within your HyCAS Target Delivery Radius/Time using the fewest units — a pure placement problem, not a volume calculation like trailer staging, since one unit doesn't get "used up" the way a trailer does. <b>Capacity Check</b> compares each unit's compression throughput (Parameters tab) against the single largest node it might need to serve — since a compression failure is assumed to hit one node at a time, not the sum of everything the unit covers. "Insufficient" means that unit's throughput can't fully cover its highest-consumption node alone; consider raising HyCAS capacity or tightening the radius/time targets to shrink cluster sizes.</div>
@@ -4239,13 +4391,16 @@ function attachHandlers(){
     const capacity = parseFloat(document.getElementById('fSCap').value);
     const cost = parseFloat(document.getElementById('fSCost').value);
     const status = document.getElementById('fSStatus').value;
+    const highPressureCapable = document.getElementById('fSHighPressure').checked;
+    const lowPressureCapable = document.getElementById('fSLowPressure').checked;
     if(!name||isNaN(lat)||isNaN(lon)||isNaN(capacity)||isNaN(cost)){ alert('Please fill in name, latitude, longitude, capacity, and cost.'); return; }
+    if(!highPressureCapable&&!lowPressureCapable){ alert('A supply source must be capable of at least one pressure level.'); return; }
     if(S.supplyForm){
       const n = S.supply.find(x=>x.id===S.supplyForm);
-      Object.assign(n,{name,city,lat,lon,capacity,cost,status});
+      Object.assign(n,{name,city,lat,lon,capacity,cost,status,highPressureCapable,lowPressureCapable});
       S.supplyForm=null;
     } else {
-      S.supply.push({id:uid(), name, city, lat, lon, capacity, cost, status});
+      S.supply.push({id:uid(), name, city, lat, lon, capacity, cost, status, highPressureCapable, lowPressureCapable});
     }
     render();
   });
@@ -4662,6 +4817,8 @@ function commitParamsForm(){
     const capEl = document.getElementById('pHycasStorageCapacity');
     if(capEl) S.params.hycasStorageCapacity = parseFloat(capEl.value)||S.params.hycasStorageCapacity;
   }
+  const chkHycasCoLocateTrailerEl = document.getElementById('chkHycasCoLocateTrailer');
+  if(chkHycasCoLocateTrailerEl) S.params.hycasCoLocateTrailer = chkHycasCoLocateTrailerEl.checked;
   S.params.unit = document.getElementById('pUnit').value.trim()||'kg';
 }
 
@@ -4683,7 +4840,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}],costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000,hycasHasOnboardStorage:false,hycasStorageCapacity:500}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}],costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000,hycasHasOnboardStorage:false,hycasStorageCapacity:500,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'buy',trailerPrice:50000,hycasPrice:250000,nodePrice:0,trailerLeaseRate:1500,hycasLeaseRate:7500,nodeLeaseRate:0,leaseTermMonths:36,tierDays:'0.5,1,2,3',outputs:[],volumeDiscounts:[]} };
     lastScenario = null;
     render();
   }
@@ -4755,7 +4912,7 @@ function applyScenarioFile(file, onDone){
     try{
       const data = JSON.parse(ev.target.result);
       if(!Array.isArray(data.demand) || !Array.isArray(data.supply)) throw new Error('File does not look like a saved scenario (missing demand/supply arrays).');
-      const defaults = {trailerCap:750,trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}],costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000,hycasHasOnboardStorage:false,hycasStorageCapacity:500,};
+      const defaults = {trailerCap:750,trailerCapacities:[{capacity:750,pressure:'high'},{capacity:350,pressure:'low'}],costPerMile:6,avgSpeed:48,safetyDays:1,targetRadius:250,targetHours:4,unit:'kg',includeFuture:true,hycasRadius:400,hycasHours:6,hycasCapacity:1000,hycasHasOnboardStorage:false,hycasStorageCapacity:500,hycasCoLocateTrailer:false,};
       S.demand = data.demand.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), rate:parseFloat(n.rate), safetyDays:parseFloat(n.safetyDays)||defaults.safetyDays }));
       S.supply = data.supply.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), capacity:parseFloat(n.capacity), cost:parseFloat(n.cost), status:(n.status==='future'?'future':'current') }));
       S.params = Object.assign({}, defaults, data.params||{});
