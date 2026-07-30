@@ -776,11 +776,14 @@ async function refreshTownCentersChunk(missing){
     (data.towns||[]).forEach(t=>{
       returned.add(t.key);
       if(t.found){ townCenterCache.set(t.key,t); addedTown=true; }
-      else if(t.error){ /* transient (rate limit, timeout, etc.) -- leave it out of both cache and
-        errors so the next render's "missing" check picks it up again automatically, rather than
-        treating "the search failed" as if it meant "no real town exists here". */ }
+      else if(t.error){
+        /* Transient (rate limit, timeout, etc.): preserve the diagnostic, but leave the point out
+        of the permanent error set so a later render can retry it automatically. */
+        if(t.debug) townCenterDebugInfo.set(t.key,t.debug);
+      }
       else {
         townCenterErrors.add(t.key);
+        if(t.debug) townCenterDebugInfo.set(t.key,t.debug);
         const src = missing.find(p=>townCenterKey(p.centroidLat,p.centroidLon)===t.key);
         if(src) logTownCenterFailure(src.centroidLat, src.centroidLon, t.debug || null);
       }
