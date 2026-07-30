@@ -160,6 +160,11 @@
 </head>
 <body>
 <div id="app">
+  <div id="localFileWarning" style="display:none;background:#5b2633;color:#ffe6ec;border-bottom:1px solid #a84a61;padding:12px 24px;font-size:14px;line-height:1.45">
+    <b>Local preview mode:</b> server-backed town placement and road routing cannot run from a
+    <code>file://</code> page. Deploy this site to Netlify or open it through
+    <code>netlify dev</code>; opening this HTML file directly is only a visual preview.
+  </div>
   <div id="aiChatPanel"></div>
   <header class="topbar">
     <div class="brand">
@@ -529,7 +534,7 @@ function downloadTemplate(kind){
     csv = 'name,city,lat,lon,rate,safetyDays\nExample Plant,"Houston, TX",29.7604,-95.3698,500,3\n';
     filename = 'demand_nodes_template.csv';
   } else if(kind==='asset'){
-    csv = 'name,type,capacity\nCompression Unit A,compression,1200\nStorage Tank 1,storage,5000\n';
+    csv = 'asset type,quantity,compression capacity,storage capacity\nHyCAS,2,1200,200\nTrailer,4,,1000\nTrailer,3,,750\nMobile Refueler,1,800,500\n';
     filename = 'assets_template.csv';
   } else if(kind==='distanceOverrides'){
     const rows = ['demand_node,supply_source,distance_miles,duration_hours,google_maps_link_click_to_look_up'];
@@ -646,14 +651,11 @@ function importAssetCSV(file){
     try { objs = csvToObjects(e.target.result); } catch(err){ alert('Could not read CSV file: '+err.message); return; }
     let added=0; const errors=[];
     objs.forEach((o,idx)=>{
-      const name = pick(o,['name','asset name','asset_name']);
-      const capacity = parseFloat(pick(o,['capacity']));
-      const typeRaw = (pick(o,['type','asset type','asset_type'])||'').toLowerCase().trim();
-      const type = typeRaw==='storage' ? 'storage' : (typeRaw==='compression' ? 'compression' : null);
-      if(!name || !type || isNaN(capacity) || capacity<=0){
-        errors.push(`Row ${idx+2}: missing/invalid name, type (must be "compression" or "storage"), or capacity`); return;
+      const parsed = parseAssetInventoryRow(o);
+      if(!parsed){
+        errors.push(`Row ${idx+2}: use HyCAS, Trailer, or Mobile Refueler with a positive quantity and applicable capacity`); return;
       }
-      S.assets.push({id:uid(), name, type, capacity});
+      S.assets.push({id:uid(), ...parsed});
       added++;
     });
     render();
@@ -676,7 +678,7 @@ let S = {
   realEstate: [], showRealEstateOverlay: true,
   aiChatOpen: false, aiChatMessages: [], aiChatBusy: false,
   exportBranding: { companyLogo: null, companyLogoName: '', customerLogo: null, customerLogoName: '', customerName: '' },
-  assetPlacement: { safetyDays:3, targetRadius:400, targetHours:6 },
+  assetPlacement: { safetyDays:1.5, targetRadius:250, targetHours:8 },
   distanceOverrides: [],
   pricing: { mode:'lease', trailerPrice: 1000000, hycasPrice: 3500000, nodePrice: 0,
              trailerLeaseRate: 22000, hycasLeaseRate: 73000, nodeLeaseRate: 0, leaseTermMonths: 60,
@@ -700,6 +702,11 @@ const HYDROGEN_DATA_ENDPOINT_URL = '/.netlify/functions/hydrogen-stations';
 const TOWN_CENTER_ENDPOINT_URL = '/.netlify/functions/town-centers';
 const GEOCODE_ENDPOINT_URL = '/.netlify/functions/geocode-addresses';
 const AI_CHAT_ENDPOINT_URL = '/.netlify/functions/ai-chat';
+const LOCAL_FILE_MODE = location.protocol === 'file:';
+if(LOCAL_FILE_MODE){
+  const warning=document.getElementById('localFileWarning');
+  if(warning) warning.style.display='block';
+}
 
 // Reverse-geocoded town centers for final placement centroids. The lookup runs through a
 // Netlify function so the ORS key remains private. Until a lookup completes, the calculated
@@ -810,6 +817,20 @@ async function refreshTownCentersChunk(missing){
 
 function maybeRefreshTownCenters(locations){
   if(!TOWN_CENTER_ENDPOINT_URL || !locations.length) return;
+  if(LOCAL_FILE_MODE){
+    locations.forEach(p=>{
+      const key=townCenterKey(p.centroidLat,p.centroidLon);
+      townCenterErrors.add(key);
+      townCenterDebugInfo.set(key,{
+        status:0,
+        radiusKm:0,
+        layers:'',
+        method:'local-file-preview',
+        bodyPreview:'The serverless endpoint is unavailable under file://'
+      });
+    });
+    return;
+  }
   refreshTownCenters(locations);
 }
 
@@ -1907,6 +1928,80 @@ function computeAutoHycas(baseRisk){
 }
 
 /* ===================== ASSET PLACEMENT (fixed inventory) ===================== */
+const ASSET_TYPE_LABELS = {
+  hycas: 'HyCAS',
+  trailer: 'Trailer',
+  'mobile-refueler': 'Mobile Refueler',
+};
+
+function normalizeAssetType(value, legacyName){
+  const raw=String(value||'').trim().toLowerCase().replace(/[_\s]+/g,'-');
+  if(raw==='hycas'||raw.includes('hycas')) return 'hycas';
+  if(raw==='trailer'||raw.includes('trailer')||raw==='storage'||raw.includes('storage')) return 'trailer';
+  if(raw==='mobile-refueler'||raw==='mobilerefueler'||raw.includes('refuel')) return 'mobile-refueler';
+  if(raw==='compression'||raw.includes('compress')){
+    return String(legacyName||'').toLowerCase().includes('hycas')?'hycas':'mobile-refueler';
+  }
+  return null;
+}
+
+function normalizedAssetGroup(asset){
+  const assetType=normalizeAssetType(asset.assetType||asset.type,asset.name);
+  const quantity=Math.max(1,Math.floor(Number(asset.quantity)||1));
+  const legacyCapacity=Number(asset.capacity);
+  const compressionCapacity=Number(asset.compressionCapacity) ||
+    (assetType!=='trailer'&&Number.isFinite(legacyCapacity)?legacyCapacity:0);
+  const storageCapacity=Number(asset.storageCapacity) ||
+    (assetType==='trailer'&&Number.isFinite(legacyCapacity)?legacyCapacity:0);
+  return {...asset,assetType,quantity,compressionCapacity,storageCapacity};
+}
+
+function parseAssetInventoryRow(o){
+  const legacyName=pick(o,['name','asset name','asset_name'])||'';
+  const rawType=pick(o,['asset type','asset_type','type'])||legacyName;
+  const assetType=normalizeAssetType(rawType,legacyName);
+  const quantityRaw=pick(o,['quantity','qty','count']);
+  const quantity=quantityRaw===undefined?1:Math.floor(Number(quantityRaw));
+  const legacyCapacity=Number(pick(o,['capacity']));
+  const compressionRaw=pick(o,['compression capacity','compression_capacity','throughput','compression throughput']);
+  const storageRaw=pick(o,['storage capacity','storage_capacity','onboard storage','onboard_storage']);
+  const compressionCapacity=compressionRaw!==undefined?Number(compressionRaw):
+    (assetType!=='trailer'&&Number.isFinite(legacyCapacity)?legacyCapacity:0);
+  const storageCapacity=storageRaw!==undefined?Number(storageRaw):
+    (assetType==='trailer'&&Number.isFinite(legacyCapacity)?legacyCapacity:0);
+  if(!assetType||!Number.isFinite(quantity)||quantity<1) return null;
+  if(assetType==='trailer'&&(!Number.isFinite(storageCapacity)||storageCapacity<=0)) return null;
+  if(assetType!=='trailer'&&(!Number.isFinite(compressionCapacity)||compressionCapacity<=0)) return null;
+  if(!Number.isFinite(storageCapacity)||storageCapacity<0) return null;
+  return {assetType,quantity,compressionCapacity,storageCapacity};
+}
+
+function assetInventoryCount(){
+  return S.assets.reduce((sum,asset)=>sum+normalizedAssetGroup(asset).quantity,0);
+}
+
+function expandedAssetsForPlacement(category){
+  const expanded=[];
+  S.assets.forEach(asset=>{
+    const group=normalizedAssetGroup(asset);
+    const matches=category==='storage'?group.assetType==='trailer':group.assetType!=='trailer';
+    if(!matches) return;
+    for(let i=0;i<group.quantity;i++){
+      const label=ASSET_TYPE_LABELS[group.assetType]||'Asset';
+      expanded.push({
+        id:`${group.id}-${i+1}`,
+        groupId:group.id,
+        assetType:group.assetType,
+        name:`${label} ${i+1}`,
+        type:category,
+        capacity:category==='storage'?group.storageCapacity:group.compressionCapacity,
+        storageCapacity:group.storageCapacity,
+      });
+    }
+  });
+  return expanded;
+}
+
 // A different question from HyCAS/hub auto-sizing above: those search for the MINIMUM count
 // needed to satisfy a target. Here the inventory is a given — "I already have these specific
 // assets, where does each one go" — so this clusters demand into exactly as many groups as you
@@ -1964,7 +2059,16 @@ function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays){
     const asset = sortedAssets[i];
     const capacityDetail = cl.need;
     const capacitySufficient = capacityDetail <= asset.capacity;
-    return { ...cl, assetId:asset.id, assetName:asset.name, assetCapacity:asset.capacity, capacityDetail, capacitySufficient };
+    return {
+      ...cl,
+      assetId:asset.id,
+      assetName:asset.name,
+      assetType:asset.assetType,
+      assetCapacity:asset.capacity,
+      assetStorageCapacity:asset.storageCapacity,
+      capacityDetail,
+      capacitySufficient,
+    };
   });
 }
 
@@ -1978,7 +2082,7 @@ function computeAssetPlacement(){
   const baseRisk = computeBaseRisk(sourcing);
 
   function forType(type){
-    const list = S.assets.filter(a=>a.type===type);
+    const list = expandedAssetsForPlacement(type);
     const assets = buildAssetPlacementForType(baseRisk, list, type, ap.safetyDays);
     // Asset Placement has no auto-search loop (the count is fixed by inventory), so real reach
     // can be applied directly to whatever the clustering+matching step produced.
@@ -2523,12 +2627,9 @@ function addSupplyRows(objs){
 function addAssetRows(objs){
   let added=0; const errors=[];
   objs.forEach((o,idx)=>{
-    const name=pick(o,['name','asset name','asset_name']);
-    const capacity=parseFloat(pick(o,['capacity']));
-    const raw=(pick(o,['type','asset type','asset_type'])||'').toLowerCase().trim();
-    const type=raw==='storage'||raw.includes('storage')?'storage':raw==='compression'||raw.includes('compress')?'compression':null;
-    if(!name||!type||isNaN(capacity)||capacity<=0){errors.push(`row ${idx+2}`);return;}
-    S.assets.push({id:uid(),name,type,capacity});added++;
+    const parsed=parseAssetInventoryRow(o);
+    if(!parsed){errors.push(`row ${idx+2}`);return;}
+    S.assets.push({id:uid(),...parsed});added++;
   });
   return {added,errors};
 }
@@ -3135,6 +3236,9 @@ function applyHycasTrailerCoLocation(hubs, hycasUnits){
 }
 
 function townCenterDebugTooltip(points){
+  if(LOCAL_FILE_MODE){
+    return 'Town-center lookup requires the Netlify function and cannot run from a file:// preview. Deploy the site or run it through Netlify Dev.';
+  }
   if(townCenterBackendVersion==null){
     return 'The town-center lookup hasn\u2019t reported back yet in this session \u2014 try again after the page finishes loading.';
   }
@@ -3705,7 +3809,8 @@ function renderScenarioTab(){
 /* ===================== RENDER: ASSET PLACEMENT TAB ===================== */
 function renderAssetPlacementTab(){
   const ap = S.assetPlacement;
-  const editing = S.assets.find(a=>a.id===S.assetForm);
+  const editingRaw = S.assets.find(a=>a.id===S.assetForm);
+  const editing = editingRaw ? normalizedAssetGroup(editingRaw) : null;
 
   if(S.demand.length===0){
     return `<div class="card"><div class="empty">Add at least one demand node first — Asset Placement runs against your current network.</div></div>`;
@@ -3728,7 +3833,7 @@ function renderAssetPlacementTab(){
       <tbody>
       ${r.assets.map(a=>`
         <tr>
-          <td><b>${esc(a.assetName)}</b><br><span style="color:#AAB2BD">cap. ${fmt(a.assetCapacity,0)}</span></td>
+          <td><b>${esc(a.assetName)}</b><br><span style="color:#AAB2BD">${a.assetType==='trailer'?`storage ${fmt(a.assetStorageCapacity,0)}`:`compression ${fmt(a.assetCapacity,0)} · storage ${fmt(a.assetStorageCapacity,0)}`}</span></td>
           <td>${a.cityRef?`<b>${esc(a.cityRef.name)}, ${esc(a.cityRef.state)}</b> area`:'<b>Unnamed area</b>'}<br>
               <span style="color:#AAB2BD">${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}${a.townResolved?' · ~'+fmt(a.townOffsetMiles,0)+' mi from calculated centroid':' · locating nearest town…'}</span></td>
           <td>${a.nearestFacility?`${esc(a.nearestFacility.name)}<br><span style="color:#AAB2BD">${fmt(a.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
@@ -3745,18 +3850,28 @@ function renderAssetPlacementTab(){
   <div class="grid2">
     <div>
       <div class="card">
-        <h2>${editing?'Edit Asset':'Add Asset'}</h2>
-        <p class="desc">Add each asset you actually have — its own name and capacity. The plan below assigns your biggest-capacity assets to your highest-need locations, matched within each asset type.</p>
-        <div class="field"><label>Asset Name</label><input id="fAssetName" placeholder="e.g. Compression Unit A" value="${editing?esc(editing.name):''}"></div>
+        <h2>${editing?'Edit Inventory Row':'Add Asset Type'}</h2>
+        <p class="desc">Add one row for each capacity configuration you own. Use quantity for identical units; add another row when a trailer or other asset has a different capacity.</p>
         <div class="row2">
           <div class="field">
-            <label>Type</label>
+            <label>Asset Type</label>
             <select id="fAssetTypeField">
-              <option value="compression" ${editing&&editing.type==='compression'?'selected':(!editing?'selected':'')}>Compression</option>
-              <option value="storage" ${editing&&editing.type==='storage'?'selected':''}>H2 Storage</option>
+              <option value="hycas" ${editing&&editing.assetType==='hycas'?'selected':''}>HyCAS</option>
+              <option value="trailer" ${editing&&editing.assetType==='trailer'?'selected':(!editing?'selected':'')}>Trailer</option>
+              <option value="mobile-refueler" ${editing&&editing.assetType==='mobile-refueler'?'selected':''}>Mobile Refueler</option>
             </select>
           </div>
-          <div class="field"><label>Capacity</label><input id="fAssetCapacityField" type="number" min="1" step="10" value="${editing?editing.capacity:''}"></div>
+          <div class="field"><label>Quantity</label><input id="fAssetQuantityField" type="number" min="1" step="1" value="${editing?editing.quantity:1}"></div>
+        </div>
+        <div class="row2">
+          <div class="field" id="assetCompressionCapacityWrap" style="${editing&&editing.assetType!=='trailer'?'':'display:none'}">
+            <label>Compression Capacity (${S.params.unit}/day)</label>
+            <input id="fAssetCompressionCapacityField" type="number" min="1" step="10" value="${editing&&editing.assetType!=='trailer'?editing.compressionCapacity:''}">
+          </div>
+          <div class="field">
+            <label><span id="assetStorageCapacityLabel">${!editing||editing.assetType==='trailer'?'Trailer':'Onboard Storage'} Capacity (${S.params.unit})</span></label>
+            <input id="fAssetStorageCapacityField" type="number" min="0" step="10" value="${editing?editing.storageCapacity:''}">
+          </div>
         </div>
         <div class="toolbar" style="margin-top:6px">
           <button class="btn btn-primary" id="btnSaveAsset">${editing?'Save Changes':'Add Asset'}</button>
@@ -3765,27 +3880,28 @@ function renderAssetPlacementTab(){
       </div>
       <div class="card">
         <div class="flexbetween">
-          <h2 style="margin-bottom:0">Asset Inventory (${S.assets.length})</h2>
+          <h2 style="margin-bottom:0">Asset Inventory (${assetInventoryCount()})</h2>
         </div>
         <div class="toolbar">
           <button class="btn btn-small btn-outline" id="btnAssetTemplate">Download Template</button>
           <button class="btn btn-small btn-outline" id="btnAssetImport">Import CSV</button>
           <input type="file" id="assetCsvFile" accept=".csv" style="display:none">
         </div>
-        <p class="desc">Columns: name, type (compression or storage), capacity. Re-import anytime to keep adding or updating your list.</p>
+        <p class="desc">Three asset types only: HyCAS, Trailer, and Mobile Refueler. HyCAS and Mobile Refueler are compression assets with editable onboard storage; trailers are storage assets.</p>
         ${S.assets.length===0?'<div class="empty">No assets yet. Add one above, or import a CSV.</div>':`
-        <table><thead><tr><th>Name</th><th>Type</th><th>Capacity</th><th></th></tr></thead>
+        <table><thead><tr><th>Asset Type</th><th>Quantity</th><th>Compression Capacity</th><th>Storage Capacity</th><th></th></tr></thead>
         <tbody>
-        ${S.assets.map(a=>`
+        ${S.assets.map(raw=>{const a=normalizedAssetGroup(raw);return `
           <tr>
-            <td><b>${esc(a.name)}</b></td>
-            <td style="text-transform:capitalize">${esc(a.type)}</td>
-            <td>${fmt(a.capacity,0)}</td>
+            <td><b>${esc(ASSET_TYPE_LABELS[a.assetType]||'Asset')}</b></td>
+            <td>${a.quantity}</td>
+            <td>${a.assetType==='trailer'?'—':fmt(a.compressionCapacity,0)}</td>
+            <td>${fmt(a.storageCapacity,0)}</td>
             <td>
               <button class="btn btn-small btn-outline" data-edit-asset="${a.id}">Edit</button>
               <button class="btn btn-small btn-danger" data-del-asset="${a.id}">Delete</button>
             </td>
-          </tr>`).join('')}
+          </tr>`}).join('')}
         </tbody></table>`}
       </div>
       <div class="card">
@@ -3795,22 +3911,22 @@ function renderAssetPlacementTab(){
           <div class="field"><label>Target Delivery Radius (miles)</label><input id="fAssetTargetRadius" type="number" min="10" step="10" value="${ap.targetRadius}"></div>
           <div class="field"><label>Target Max Response Time (hours)</label><input id="fAssetTargetHours" type="number" min="0.5" step="0.5" value="${ap.targetHours}"></div>
         </div>
-        <div class="field"><label>Safety-Stock Days (for H2 Storage capacity checks)</label><input id="fAssetSafetyDays" type="number" min="0.5" step="0.5" value="${ap.safetyDays}"></div>
+        <div class="field"><label>Safety-Stock Days (for trailer capacity checks)</label><input id="fAssetSafetyDays" type="number" min="0.5" step="0.5" value="${ap.safetyDays}"></div>
         <button class="btn btn-primary" id="btnRecalcAssets">Run Asset Placement Recommendation</button>
       </div>
-      <div class="note" style="margin-top:0">Compression capacity is checked against the single largest demand node any one asset covers — a compression failure hits one node at a time. Storage capacity is checked against the combined demand of every node an asset covers, times the safety-stock days above — a storage asset's volume gets drawn down by everything it serves at once.</div>
+      <div class="note" style="margin-top:0">HyCAS and Mobile Refueler compression capacity is checked against the single largest demand node each unit covers. Trailer storage capacity is checked against combined covered demand times the safety-stock days above. Onboard storage for compression assets is retained and shown with each assigned unit.</div>
     </div>
     <div>
       ${!result?'<div class="card"><div class="empty">Add at least one asset to see a placement plan.</div></div>':`
       <div class="kpirow">
-        <div class="kpi"><div class="val">${S.assets.filter(a=>a.type==='compression').length}</div><div class="lbl">Compression Assets</div></div>
-        <div class="kpi"><div class="val">${S.assets.filter(a=>a.type==='storage').length}</div><div class="lbl">H2 Storage Assets</div></div>
+        <div class="kpi"><div class="val">${expandedAssetsForPlacement('compression').length}</div><div class="lbl">Compression Assets</div></div>
+        <div class="kpi"><div class="val">${expandedAssetsForPlacement('storage').length}</div><div class="lbl">Trailers</div></div>
         <div class="kpi ${(result.compression.anyCapacityShortfall||result.storage.anyCapacityShortfall)?'warn':''}"><div class="val">${result.compression.assets.filter(a=>!a.capacitySufficient).length + result.storage.assets.filter(a=>!a.capacitySufficient).length}</div><div class="lbl">Assets w/ Capacity Shortfall</div></div>
       </div>
       ${resultSection('Compression', result.compression, 'compression throughput')}
-      ${resultSection('H2 Storage', result.storage, 'storage capacity')}
+      ${resultSection('Trailers', result.storage, 'storage capacity')}
       ${result.compression.assets.length===0 && result.storage.assets.length===0?'<div class="card"><div class="empty">Add at least one asset to see a placement plan.</div></div>':''}
-      <div class="note" style="margin-top:0">Each weighted cluster center is matched to its nearest real town center. Coverage and reach are evaluated from that town center, while the nearest existing facility is shown separately for context. Confirm operational suitability and available yard space before deployment. Compression and H2 Storage are placed independently of each other.</div>
+      <div class="note" style="margin-top:0">Each weighted cluster center is matched to its nearest real town center. Compression assets and trailers are placed independently. Confirm operational suitability and available yard space before deployment.</div>
       `}
     </div>
   </div>`;
@@ -3832,7 +3948,7 @@ function renderAssetPlacementRecommendationTab(){
       <p class="desc">Recommended assignment from the inventory and guardrails configured on Asset Placement.</p>
       <table><thead><tr><th>Assigned Asset</th><th>Proposed Location</th><th>Nearest Facility</th><th>Nodes Covered</th><th>Coverage Demand</th><th>Avg / Max Reach</th><th>Capacity Check</th></tr></thead>
       <tbody>${r.assets.map(a=>`<tr>
-        <td><b>${esc(a.assetName)}</b><br><span style="color:var(--muted)">${fmt(a.assetCapacity,0)} capacity</span></td>
+        <td><b>${esc(a.assetName)}</b><br><span style="color:var(--muted)">${a.assetType==='trailer'?`storage ${fmt(a.assetStorageCapacity,0)}`:`compression ${fmt(a.assetCapacity,0)} · storage ${fmt(a.assetStorageCapacity,0)}`}</span></td>
         <td><b>${a.cityRef?`${esc(a.cityRef.name)}, ${esc(a.cityRef.state)}`:'Unnamed area'}</b><br><span style="color:var(--muted)">${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}</span></td>
         <td>${a.nearestFacility?`${esc(a.nearestFacility.name)}<br><span style="color:var(--muted)">${fmt(a.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
         <td>${a.covered.length}</td><td>${fmt(a.coveredDemand)} ${S.params.unit}/day</td>
@@ -3845,21 +3961,21 @@ function renderAssetPlacementRecommendationTab(){
     ${calculationReadinessBanner()}
     <div class="kpirow">
       <div class="kpi"><div class="val">${result.compression.assets.length}</div><div class="lbl">Compression Placements</div></div>
-      <div class="kpi"><div class="val">${result.storage.assets.length}</div><div class="lbl">Storage Placements</div></div>
+      <div class="kpi"><div class="val">${result.storage.assets.length}</div><div class="lbl">Trailer Placements</div></div>
       <div class="kpi ${shortfalls?'warn':''}"><div class="val">${shortfalls}</div><div class="lbl">Capacity Shortfalls</div></div>
       <div class="kpi ${outside?'warn':''}"><div class="val">${outside}</div><div class="lbl">Outside Reach Target</div></div>
     </div>
     <div class="card status-card ${!shortfalls&&!outside?'status-ok':''}">
       <b class="status-title">${!shortfalls&&!outside?'✓ Recommendation meets the configured targets':'⚠ Recommendation needs review'}</b>
-      &nbsp;—&nbsp; Based on ${S.assets.length} imported/entered asset(s), ${fmt(S.assetPlacement.targetRadius,0)}mi / ${fmt(S.assetPlacement.targetHours,1)}h reach, and ${fmt(S.assetPlacement.safetyDays,1)} storage day(s).
+      &nbsp;—&nbsp; Based on ${assetInventoryCount()} imported/entered asset(s), ${fmt(S.assetPlacement.targetRadius,0)}mi / ${fmt(S.assetPlacement.targetHours,1)}h reach, and ${fmt(S.assetPlacement.safetyDays,1)} storage day(s).
     </div>
     <div class="card">
       <h2>Asset Placement Map</h2>
-      <p class="desc">Compression assets are purple triangles; storage assets are amber diamonds. Circles show the configured response radius.</p>
+      <p class="desc">HyCAS and Mobile Refuelers are purple triangles; trailers are amber diamonds. Circles show the configured response radius.</p>
       <div class="mapwrap"><svg id="assetRecommendationSvg" viewBox="0 0 960 600" style="display:block;width:100%;height:auto;background:var(--map-bg)"></svg></div>
     </div>
     ${section('Compression',result.compression,'throughput')}
-    ${section('H2 Storage',result.storage,'storage')}
+    ${section('Trailers',result.storage,'storage')}
   `;
 }
 
@@ -5260,19 +5376,35 @@ function attachHandlers(){
 
   const btnSaveAsset = document.getElementById('btnSaveAsset');
   if(btnSaveAsset) btnSaveAsset.addEventListener('click', ()=>{
-    const name = document.getElementById('fAssetName').value.trim();
-    const type = document.getElementById('fAssetTypeField').value;
-    const capacity = parseFloat(document.getElementById('fAssetCapacityField').value);
-    if(!name){ alert('Please enter an asset name.'); return; }
-    if(isNaN(capacity)||capacity<=0){ alert('Please enter a valid, positive capacity.'); return; }
+    const assetType = document.getElementById('fAssetTypeField').value;
+    const quantity = Math.floor(parseFloat(document.getElementById('fAssetQuantityField').value));
+    const compressionCapacity = parseFloat(document.getElementById('fAssetCompressionCapacityField').value)||0;
+    const storageCapacity = parseFloat(document.getElementById('fAssetStorageCapacityField').value);
+    if(!Number.isFinite(quantity)||quantity<1){ alert('Please enter a positive whole-number quantity.'); return; }
+    if(assetType!=='trailer'&&(!Number.isFinite(compressionCapacity)||compressionCapacity<=0)){
+      alert('Please enter a positive compression capacity.'); return;
+    }
+    if(!Number.isFinite(storageCapacity)||storageCapacity<0||(assetType==='trailer'&&storageCapacity<=0)){
+      alert(assetType==='trailer'?'Please enter a positive trailer storage capacity.':'Please enter a valid onboard storage capacity (zero is allowed).'); return;
+    }
+    const values={assetType,quantity,compressionCapacity:assetType==='trailer'?0:compressionCapacity,storageCapacity};
     if(S.assetForm){
       const a = S.assets.find(x=>x.id===S.assetForm);
-      Object.assign(a,{name,type,capacity});
+      Object.assign(a,values);
+      delete a.name; delete a.type; delete a.capacity;
       S.assetForm=null;
     } else {
-      S.assets.push({id:uid(), name, type, capacity});
+      S.assets.push({id:uid(),...values});
     }
     render();
+  });
+  const fAssetTypeField = document.getElementById('fAssetTypeField');
+  if(fAssetTypeField) fAssetTypeField.addEventListener('change', ()=>{
+    const isTrailer=fAssetTypeField.value==='trailer';
+    const compressionWrap=document.getElementById('assetCompressionCapacityWrap');
+    const storageLabel=document.getElementById('assetStorageCapacityLabel');
+    if(compressionWrap) compressionWrap.style.display=isTrailer?'none':'';
+    if(storageLabel) storageLabel.textContent=`${isTrailer?'Trailer':'Onboard Storage'} Capacity (${S.params.unit})`;
   });
   const btnCancelAsset = document.getElementById('btnCancelAsset');
   if(btnCancelAsset) btnCancelAsset.addEventListener('click', ()=>{ S.assetForm=null; render(); });
@@ -5481,7 +5613,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
     lastScenario = null;
     render();
   }

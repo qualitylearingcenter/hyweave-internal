@@ -1,0 +1,15 @@
+Deploy this directory as the Netlify site root.
+
+Required layout:
+
+index.html
+netlify/
+  functions/
+    town-centers.js
+    us-places.json
+
+The JSON file must remain beside town-centers.js because the function loads it directly.
+
+After deployment, perform a hard refresh so the page starts with empty in-memory lookup caches.
+The U.S. town lookup no longer requires ORS_API_KEY. ORS_API_KEY remains optional for coordinates
+outside the 50 states, Washington D.C., and Puerto Rico.
