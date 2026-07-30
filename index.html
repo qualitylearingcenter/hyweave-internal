@@ -160,6 +160,7 @@
 </head>
 <body>
 <div id="app">
+  <div id="aiChatPanel"></div>
   <header class="topbar">
     <div class="brand">
       <div class="logo-row">
@@ -673,13 +674,14 @@ let S = {
   showTrailerRadius: true, showHycasRadius: true,
   assets: [], assetForm: null,
   realEstate: [], showRealEstateOverlay: true,
+  aiChatOpen: false, aiChatMessages: [], aiChatBusy: false,
   exportBranding: { companyLogo: null, companyLogoName: '', customerLogo: null, customerLogoName: '', customerName: '' },
   assetPlacement: { safetyDays:3, targetRadius:400, targetHours:6 },
   distanceOverrides: [],
   pricing: { mode:'lease', trailerPrice: 1000000, hycasPrice: 3500000, nodePrice: 0,
              trailerLeaseRate: 22000, hycasLeaseRate: 73000, nodeLeaseRate: 0, leaseTermMonths: 60,
              tierDays: '0.5,1,1.5,2,2.5', outputs: [], volumeDiscounts: [],
-             doeSubsidyPct: 30, doeTrailerPassthroughPct: 0, doeHycasPassthroughPct: 0,
+             doeAward: 500000, doeTrailerPassthroughPct: 0, doeHycasPassthroughPct: 0,
              manualHycasCount: null, manualTrailerCount: null, manualFuelCellCount: null },
 };
 
@@ -697,6 +699,7 @@ const ROUTE_ENDPOINT_URL = '/.netlify/functions/route-distance';
 const HYDROGEN_DATA_ENDPOINT_URL = '/.netlify/functions/hydrogen-stations';
 const TOWN_CENTER_ENDPOINT_URL = '/.netlify/functions/town-centers';
 const GEOCODE_ENDPOINT_URL = '/.netlify/functions/geocode-addresses';
+const AI_CHAT_ENDPOINT_URL = '/.netlify/functions/ai-chat';
 
 // Reverse-geocoded town centers for final placement centroids. The lookup runs through a
 // Netlify function so the ORS key remains private. Until a lookup completes, the calculated
@@ -2201,8 +2204,13 @@ function computePricingTiers(base, tierDaysList, rates){
     const trailerBuyUnit = rates.trailerPrice * (1 - trailerDiscountPct/100);
     const hycasBuyUnit = rates.hycasPrice * (1 - hycasDiscountPct/100);
     const nodeBuyUnit = rates.nodePrice * (1 - nodeDiscountPct/100);
-    const trailerLeaseUnit = rates.trailerLeaseRate * (1 - trailerDiscountPct/100) * (1 - (rates.doeSubsidyPct||0)/100 * (rates.doeTrailerPassthroughPct||0)/100);
-    const hycasLeaseUnit = rates.hycasLeaseRate * (1 - hycasDiscountPct/100) * (1 - (rates.doeSubsidyPct||0)/100 * (rates.doeHycasPassthroughPct||0)/100);
+    // DoE Award is a fixed dollar amount, split equally across every trailer and HyCAS unit in
+    // this tier's fleet -- not a percentage. Each unit type's Passthrough % then controls how
+    // much of that unit's equal share actually reduces its own lease cost.
+    const totalUnits = trailers + base.hycasCount;
+    const perUnitAward = totalUnits>0 ? (rates.doeAward||0)/totalUnits : 0;
+    const trailerLeaseUnit = Math.max(0, rates.trailerLeaseRate * (1 - trailerDiscountPct/100) - perUnitAward*(rates.doeTrailerPassthroughPct||0)/100);
+    const hycasLeaseUnit = Math.max(0, rates.hycasLeaseRate * (1 - hycasDiscountPct/100) - perUnitAward*(rates.doeHycasPassthroughPct||0)/100);
     const nodeLeaseUnit = rates.nodeLeaseRate * (1 - nodeDiscountPct/100);
     const buyPrice = trailers*trailerBuyUnit + base.hycasCount*hycasBuyUnit + base.nodeCount*nodeBuyUnit;
     const leaseMonthly = trailers*trailerLeaseUnit + base.hycasCount*hycasLeaseUnit + base.nodeCount*nodeLeaseUnit;
@@ -2220,8 +2228,10 @@ function computeManualPricingResult(hycasCount, trailerCount, fuelCellCount, rat
   const hycasDiscountPct = findDiscountPct('hycas', hycasCount);
   const trailerBuyUnit = rates.trailerPrice * (1 - trailerDiscountPct/100);
   const hycasBuyUnit = rates.hycasPrice * (1 - hycasDiscountPct/100);
-  const trailerLeaseUnit = rates.trailerLeaseRate * (1 - trailerDiscountPct/100) * (1 - (rates.doeSubsidyPct||0)/100 * (rates.doeTrailerPassthroughPct||0)/100);
-  const hycasLeaseUnit = rates.hycasLeaseRate * (1 - hycasDiscountPct/100) * (1 - (rates.doeSubsidyPct||0)/100 * (rates.doeHycasPassthroughPct||0)/100);
+  const totalUnits = trailerCount + hycasCount;
+  const perUnitAward = totalUnits>0 ? (rates.doeAward||0)/totalUnits : 0;
+  const trailerLeaseUnit = Math.max(0, rates.trailerLeaseRate * (1 - trailerDiscountPct/100) - perUnitAward*(rates.doeTrailerPassthroughPct||0)/100);
+  const hycasLeaseUnit = Math.max(0, rates.hycasLeaseRate * (1 - hycasDiscountPct/100) - perUnitAward*(rates.doeHycasPassthroughPct||0)/100);
   const buyPrice = trailerCount*trailerBuyUnit + hycasCount*hycasBuyUnit;
   const leaseMonthly = trailerCount*trailerLeaseUnit + hycasCount*hycasLeaseUnit;
   const leaseYearly = leaseMonthly * 12;
@@ -2271,6 +2281,120 @@ function buildPricingPrintExport(base, tiers, isLease, rates){
       <tbody>${rowsHtml}</tbody>
     </table>
     <div class="ppNote">Pricing reflects current network configuration and applicable volume discounts. Figures are estimates and subject to change.</div>`;
+}
+
+// Budget-constrained network planner. The rest of the app answers "what's the minimum setup
+// that hits my target radius/time?" -- this answers the inverse: "given a fixed dollar budget,
+// what's the best coverage I can get?" Searches hub count and HyCAS count as two independent
+// dimensions, greedily adding whichever next increment (one more hub's trailer coverage, or one
+// more HyCAS unit) reduces the most high-risk demand -- weighted by rate, since a 500 kg/day node
+// left uncovered matters more than a 20 kg/day one -- per dollar spent, stopping once nothing
+// affordable improves things further. Every number (hub locations, trailer counts, HyCAS
+// placement, cost) comes directly from the same functions the Optimization Results and Pricing
+// tabs already use -- straight-line placement for search speed, exactly like the auto-search
+// does before real routing resolves, with the same honest caveat about that.
+function computeBudgetConstrainedPlan(budgetDollars, mode){
+  if(S.demand.length===0 || S.supply.length===0) return { error:'Add at least one demand node and one supply source first.' };
+  if(!(budgetDollars>0)) return { error:'Budget must be a positive dollar amount.' };
+  mode = mode==='buy' ? 'buy' : 'lease';
+
+  const sourcing = computeSourcing();
+  const baseRisk = computeBaseRisk(sourcing);
+  const maxK = Math.min(S.demand.length, 40);
+  const hubCache = new Map(), hycasCache = new Map();
+  const getHubs = k => { if(!hubCache.has(k)) hubCache.set(k, buildHubsForK(baseRisk,k)); return hubCache.get(k); };
+  const getHycas = k => { if(!hycasCache.has(k)) hycasCache.set(k, buildHycasForK(baseRisk,k)); return hycasCache.get(k); };
+
+  function unitCost(product, qty){
+    const disc = findDiscountPct(product, qty)/100;
+    if(mode==='buy'){
+      const base = product==='trailer'?S.pricing.trailerPrice:S.pricing.hycasPrice;
+      return base*(1-disc);
+    }
+    const base = product==='trailer'?S.pricing.trailerLeaseRate:S.pricing.hycasLeaseRate;
+    return base*(1-disc); // DOE award applied once on the combined total below, not per-candidate here
+  }
+  function totalCost(hubs, hycasUnits){
+    const trailers = hubs.reduce((a,h)=>a+h.trailers,0);
+    const hycasCount = hycasUnits.length;
+    const rawTrailerCost = trailers*unitCost('trailer',trailers);
+    const rawHycasCost = hycasCount*unitCost('hycas',hycasCount);
+    if(mode==='buy') return rawTrailerCost+rawHycasCost;
+    const totalUnits = trailers+hycasCount;
+    const perUnitAward = totalUnits>0 ? (S.pricing.doeAward||0)/totalUnits : 0;
+    const trailerAward = Math.min(rawTrailerCost, trailers*perUnitAward*(S.pricing.doeTrailerPassthroughPct||0)/100);
+    const hycasAward = Math.min(rawHycasCost, hycasCount*perUnitAward*(S.pricing.doeHycasPassthroughPct||0)/100);
+    return (rawTrailerCost-trailerAward)+(rawHycasCost-hycasAward);
+  }
+  function weightedUncovered(hubs, hycasUnits){
+    const risk = computeFinalRisk(baseRisk, hubs, hycasUnits);
+    return S.demand.reduce((a,n)=> a + (risk[n.id].tier==='High' ? n.rate : 0), 0);
+  }
+
+  function bestHubJump(){
+    let best=null;
+    for(let k=hubK+1;k<=maxK;k++){
+      const cand=getHubs(k);
+      if(!cand.length) break;
+      const c=totalCost(cand,hycasUnits);
+      const delta=c-cost;
+      if(delta<=0 || cost+delta>budgetDollars) continue;
+      const u=weightedUncovered(cand,hycasUnits);
+      const gain=uncovered-u;
+      if(gain<=0) continue;
+      const score=gain/delta;
+      if(!best || score>best.score) best={type:'hub',k,cand,cost:c,uncovered:u,score};
+    }
+    return best;
+  }
+  function bestHycasJump(){
+    let best=null;
+    for(let k=hycasK+1;k<=maxK;k++){
+      const cand=getHycas(k);
+      if(!cand.length) break;
+      const c=totalCost(hubs,cand);
+      const delta=c-cost;
+      if(delta<=0 || cost+delta>budgetDollars) continue;
+      const u=weightedUncovered(hubs,cand);
+      const gain=uncovered-u;
+      if(gain<=0) continue;
+      const score=gain/delta;
+      if(!best || score>best.score) best={type:'hycas',k,cand,cost:c,uncovered:u,score};
+    }
+    return best;
+  }
+  let hubK=0, hycasK=0, hubs=[], hycasUnits=[];
+  let cost = 0;
+  let uncovered = weightedUncovered(hubs, hycasUnits);
+  const steps = [];
+  while(true){
+    // At each round, search every possible jump size for both dimensions (not just +1) -- a
+    // single extra hub can land in a "compromise" position that helps nobody when demand is
+    // spread out, even though a bigger jump (e.g. straight to 3 hubs) clearly would. Picking only
+    // the immediate next step would wrongly give up the moment that one step shows no gain.
+    const hubOption = bestHubJump();
+    const hycasOption = bestHycasJump();
+    const bestOption = (!hubOption) ? hycasOption : (!hycasOption) ? hubOption : (hubOption.score>=hycasOption.score ? hubOption : hycasOption);
+    if(!bestOption) break;
+    if(bestOption.type==='hub'){ hubK=bestOption.k; hubs=bestOption.cand; }
+    else { hycasK=bestOption.k; hycasUnits=bestOption.cand; }
+    cost=bestOption.cost; uncovered=bestOption.uncovered;
+    steps.push({type:bestOption.type, k:bestOption.k, cost, uncovered});
+  }
+
+  const risk = computeFinalRisk(baseRisk, hubs, hycasUnits);
+  const highRiskNodes = S.demand.filter(n=>risk[n.id].tier==='High');
+  const trailers = hubs.reduce((a,h)=>a+h.trailers,0);
+  return {
+    mode, budgetDollars, spentDollars:cost, remainingDollars:budgetDollars-cost,
+    hubCount:hubK, hycasCount:hycasK, trailerCount:trailers,
+    hubs, hycasUnits,
+    totalDemand: S.demand.reduce((a,n)=>a+n.rate,0),
+    coveredDemandPct: (()=>{ const total=S.demand.reduce((a,n)=>a+n.rate,0); return total>0?100*(1-uncovered/total):100; })(),
+    highRiskNodeCount: highRiskNodes.length,
+    highRiskNodeNames: highRiskNodes.map(n=>n.name),
+    roadValidated: hubs.every(h=>h.reachIsReal!==false) && hycasUnits.every(u=>u.reachIsReal!==false),
+  };
 }
 
 /* ===================== VOLUME DISCOUNT IMPORT ===================== */
@@ -2449,7 +2573,44 @@ async function importMasterFiles(files){
 /* PRICING_BLOCK_END */
 
 /* ===================== RENDER: SHELL ===================== */
+let aiChatInputDraft = '';
+function renderAiChatPanel(){
+  const hasMessages = S.aiChatMessages.length>0;
+  const open = S.aiChatOpen || hasMessages;
+  return `
+  <div class="card" style="margin:0 0 16px;border-color:${open?'var(--blue)':'var(--border)'}">
+    <div class="flexbetween" style="cursor:pointer" id="aiChatHeaderToggle">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:16px">🤖</span>
+        <b>Network Planning Assistant</b>
+        <span style="color:#AAB2BD;font-size:12px;font-weight:400">— asks your real optimization &amp; pricing engine, never guesses numbers</span>
+      </div>
+      <span style="color:#AAB2BD">${open?'▲':'▼'}</span>
+    </div>
+    ${open?`
+    <div id="aiChatMessages" style="max-height:280px;overflow-y:auto;margin-top:12px;${hasMessages?'':'display:none'}">
+      ${S.aiChatMessages.map(m=>`
+        <div style="margin-bottom:10px;text-align:${m.role==='user'?'right':'left'}">
+          <div style="display:inline-block;max-width:80%;padding:8px 12px;border-radius:10px;font-size:13px;line-height:1.4;text-align:left;
+                      background:${m.role==='user'?'var(--blue)':m.isError?'#3A2323':'var(--panel-2)'};
+                      color:${m.role==='user'?'#fff':m.isError?'#F3B0B0':'var(--text)'}">
+            ${esc(typeof m.content==='string'?m.content:'').replace(/\n/g,'<br>')}
+          </div>
+        </div>`).join('')}
+      ${S.aiChatBusy?'<div style="color:#AAB2BD;font-size:13px">Thinking…</div>':''}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <input id="aiChatInput" type="text" placeholder="e.g. My budget is $500k — best hub/trailer/HyCAS setup?" value="${esc(aiChatInputDraft)}" style="flex:1" ${S.aiChatBusy?'disabled':''}>
+      <button class="btn btn-primary" id="aiChatSend" ${S.aiChatBusy?'disabled':''}>Send</button>
+    </div>
+    <div class="note" style="margin-top:6px">Needs <code>ANTHROPIC_API_KEY</code> configured on this deployment. Every number it reports comes from this app's own calculations, not the model's own reasoning.</div>
+    `:''}
+  </div>`;
+}
+
 function render(){
+  const aiChatPanelEl = document.getElementById('aiChatPanel');
+  if(aiChatPanelEl) aiChatPanelEl.innerHTML = renderAiChatPanel();
   maybeRefreshRoadDistances();
   if(S.activeTab==='results' && publicHydrogenStatus==='idle') refreshPublicHydrogenStations();
   const cntDemandEl = document.getElementById('cntDemand');
@@ -2984,6 +3145,148 @@ function townCenterDebugTooltip(points){
     return `(${p.lat.toFixed(3)},${p.lon.toFixed(3)}) @ ${d.radiusKm}km${d.layers?' layers='+d.layers:' no layer filter'}: HTTP ${d.status}, body: ${d.bodyPreview}`;
   }).filter(Boolean);
   return details.length ? details.join(' | ') : 'Backend is current, but no diagnostic was captured for this specific point (it may have resolved via a transient-error retry instead of a genuine empty result).';
+}
+
+// Tool definitions for the AI assistant, following Anthropic's tool_use schema. Every tool maps
+// directly to a real app function -- the model never computes a number itself, only decides
+// which tool to call and how to phrase the answer using what the tool returns.
+const AI_TOOLS = [
+  {
+    name: 'get_network_summary',
+    description: 'Current network overview: demand node count, supply source count, total demand, and what the system currently recommends (minimum hub/trailer/HyCAS count) at the configured target radius/time. Use this to answer general "what does my network look like" questions.',
+    input_schema: { type:'object', properties:{}, required:[] },
+  },
+  {
+    name: 'get_budget_constrained_plan',
+    description: 'Given a fixed dollar budget, finds the best achievable configuration (hub count and locations, trailer count, HyCAS unit count) that maximizes coverage of demand while staying within that budget. Use this whenever the user asks what they can afford, or for the best setup given a specific budget (buy price or monthly lease amount).',
+    input_schema: {
+      type:'object',
+      properties: {
+        budget: { type:'number', description:'Total budget in dollars' },
+        mode: { type:'string', enum:['buy','lease'], description:'Whether the budget is a one-time purchase total (buy) or a monthly lease amount (lease)' },
+      },
+      required: ['budget','mode'],
+    },
+  },
+  {
+    name: 'get_pricing_for_counts',
+    description: 'Buy price and lease cost (monthly/yearly/daily, with per-fuel-cell breakdown if given a fuel cell count) for a specific number of HyCAS units and trailers. Use this when the user asks what a specific number of units would cost.',
+    input_schema: {
+      type:'object',
+      properties: {
+        hycasCount: { type:'number' },
+        trailerCount: { type:'number' },
+        fuelCellCount: { type:'number', description:'Optional, enables the per-fuel-cell cost breakdown' },
+      },
+      required: ['hycasCount','trailerCount'],
+    },
+  },
+];
+
+function executeAiTool(name, input){
+  try{
+    if(S.demand.length===0 || S.supply.length===0) return {error:'No demand nodes or supply sources are configured yet -- add those first.'};
+    if(name==='get_network_summary'){
+      const sourcing = computeSourcing();
+      const baseRisk = computeBaseRisk(sourcing);
+      const hubPlan = computeAutoHubs(baseRisk);
+      const hycasPlan = computeAutoHycas(baseRisk);
+      return {
+        demandNodeCount: S.demand.length,
+        supplySourceCount: activeSupply().length,
+        totalDemandPerDay: Math.round(S.demand.reduce((a,n)=>a+n.rate,0)),
+        unit: S.params.unit,
+        targetDeliveryRadiusMiles: S.params.targetRadius,
+        targetMaxResupplyHours: S.params.targetHours,
+        currentRecommendedHubCount: hubPlan.hubs.length,
+        currentRecommendedTrailerCount: hubPlan.hubs.reduce((a,h)=>a+h.trailers,0),
+        currentRecommendedHycasCount: hycasPlan.units.length,
+        currentlyMeetsTarget: hubPlan.metTarget,
+      };
+    }
+    if(name==='get_budget_constrained_plan'){
+      const budget = Number(input.budget), mode = input.mode==='buy'?'buy':'lease';
+      if(!(budget>0)) return {error:'Budget must be a positive number.'};
+      const plan = computeBudgetConstrainedPlan(budget, mode);
+      if(plan.error) return plan;
+      return {
+        recommendedHubCount: plan.hubCount,
+        recommendedTrailerCount: plan.trailerCount,
+        recommendedHycasCount: plan.hycasCount,
+        estimatedSpendDollars: Math.round(plan.spentDollars),
+        budgetDollars: plan.budgetDollars,
+        remainingBudgetDollars: Math.round(plan.remainingDollars),
+        percentOfDemandCovered: Math.round(plan.coveredDemandPct*10)/10,
+        highRiskNodesRemaining: plan.highRiskNodeCount,
+        highRiskNodeNames: plan.highRiskNodeNames,
+        hubAreas: plan.hubs.map(h=>({ area: h.cityRef?`${h.cityRef.name}, ${h.cityRef.state}`:'(resolving real location)', nodesCovered: h.covered.length, trailersHere: h.trailers })),
+        basis: plan.roadValidated ? 'real road-distance-validated placement' : 'straight-line estimate; real road distance may adjust this slightly once it resolves',
+      };
+    }
+    if(name==='get_pricing_for_counts'){
+      const rates = { trailerPrice:S.pricing.trailerPrice, hycasPrice:S.pricing.hycasPrice,
+                       trailerLeaseRate:S.pricing.trailerLeaseRate, hycasLeaseRate:S.pricing.hycasLeaseRate,
+                       leaseTermMonths:S.pricing.leaseTermMonths, doeAward:S.pricing.doeAward,
+                       doeTrailerPassthroughPct:S.pricing.doeTrailerPassthroughPct, doeHycasPassthroughPct:S.pricing.doeHycasPassthroughPct };
+      const r = computeManualPricingResult(Number(input.hycasCount)||0, Number(input.trailerCount)||0, Number(input.fuelCellCount)||0, rates);
+      return {
+        buyPriceTotalDollars: Math.round(r.buyPrice),
+        leaseMonthlyDollars: Math.round(r.leaseMonthly),
+        leaseYearlyDollars: Math.round(r.leaseYearly),
+        leaseDailyDollars: Math.round(r.leaseDaily*100)/100,
+        leaseTotalOverTermDollars: Math.round(r.leaseTotal),
+        perFuelCell: r.fuelCellCount>0 ? {
+          yearlyDollars: Math.round(r.leaseYearlyPerFuelCell*100)/100,
+          monthlyDollars: Math.round(r.leaseMonthlyPerFuelCell*100)/100,
+          dailyDollars: Math.round(r.leaseDailyPerFuelCell*100)/100,
+        } : null,
+      };
+    }
+    return {error:'Unknown tool: '+name};
+  } catch(err){
+    return {error:'Tool execution failed: '+err.message};
+  }
+}
+
+const AI_SYSTEM_PROMPT = 'You are a network planning assistant embedded in HyWeave, a hydrogen supply chain planning tool. Answer questions about hub placement, trailer counts, HyCAS units, and pricing using ONLY the tools provided -- never estimate, guess, or compute a specific number yourself. Always call a tool before stating any dollar figure or unit count. Keep answers concise and concrete, and mention when a result is based on a straight-line estimate pending real road-distance validation.';
+
+async function sendAiChatMessage(userText){
+  if(!userText.trim() || S.aiChatBusy) return;
+  S.aiChatMessages.push({role:'user', content:userText.trim()});
+  S.aiChatBusy = true;
+  render();
+  let messages = S.aiChatMessages.filter(m=>!m.isError).map(m=>({role:m.role, content:m.content}));
+  try{
+    let guard = 0;
+    while(guard++<6){
+      const resp = await fetch(AI_CHAT_ENDPOINT_URL, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ system: AI_SYSTEM_PROMPT, messages, tools: AI_TOOLS }),
+      });
+      if(!resp.ok){
+        const errText = cleanFetchErrorText(await resp.text().catch(()=>''), resp.status);
+        S.aiChatMessages.push({role:'assistant', content: '⚠ '+(errText || `Request failed (${resp.status})`), isError:true});
+        break;
+      }
+      const data = await resp.json();
+      const toolUses = (data.content||[]).filter(b=>b.type==='tool_use');
+      const textBlocks = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n').trim();
+      messages.push({role:'assistant', content:data.content});
+      if(toolUses.length===0 || data.stop_reason!=='tool_use'){
+        S.aiChatMessages.push({role:'assistant', content: textBlocks || '(no response)'});
+        break;
+      }
+      const toolResults = toolUses.map(tu=>({
+        type:'tool_result', tool_use_id: tu.id,
+        content: JSON.stringify(executeAiTool(tu.name, tu.input)),
+      }));
+      messages.push({role:'user', content: toolResults});
+    }
+  } catch(err){
+    S.aiChatMessages.push({role:'assistant', content: '⚠ '+err.message, isError:true});
+  }
+  S.aiChatBusy = false;
+  render();
 }
 
 function renderResultsTab(){
@@ -3691,7 +3994,7 @@ function renderPricingTab(){
   const tierDaysList = parseTierDays(p.tierDays);
   const rates = { trailerPrice:p.trailerPrice, hycasPrice:p.hycasPrice, nodePrice:p.nodePrice,
                    trailerLeaseRate:p.trailerLeaseRate, hycasLeaseRate:p.hycasLeaseRate, nodeLeaseRate:p.nodeLeaseRate,
-                   leaseTermMonths:p.leaseTermMonths, doeSubsidyPct:p.doeSubsidyPct, doeTrailerPassthroughPct:p.doeTrailerPassthroughPct, doeHycasPassthroughPct:p.doeHycasPassthroughPct };
+                   leaseTermMonths:p.leaseTermMonths, doeAward:p.doeAward, doeTrailerPassthroughPct:p.doeTrailerPassthroughPct, doeHycasPassthroughPct:p.doeHycasPassthroughPct };
   const tiers = base ? computePricingTiers(base, tierDaysList, rates) : [];
   const isLease = p.mode==='lease';
 
@@ -3710,12 +4013,12 @@ function renderPricingTab(){
           <div class="field"><label>Lease Rate per Node ($/month) <span style="color:#AAB2BD;font-weight:400">— optional</span></label><input id="fLeaseNode" type="number" min="0" step="50" value="${p.nodeLeaseRate}"></div>
           <div class="field"><label>Lease Term (months)</label><input id="fLeaseTerm" type="number" min="1" step="1" value="${p.leaseTermMonths}"></div>
         </div>
-        <div class="field"><label>DOE Subsidy (%) <span style="color:#AAB2BD;font-weight:400">— what the DOE actually offers</span></label><input id="fDoeSubsidy" type="number" min="0" max="100" step="1" value="${p.doeSubsidyPct}"></div>
+        <div class="field"><label>DoE Award ($) <span style="color:#AAB2BD;font-weight:400">— total award, split equally per unit</span></label><input id="fDoeSubsidy" type="number" min="0" step="1000" value="${p.doeAward}"></div>
         <div class="row2">
           <div class="field"><label>DOE Discount Trailer % Passthrough</label><input id="fDoeDiscountTrailer" type="number" min="0" max="100" step="1" value="${p.doeTrailerPassthroughPct}"></div>
           <div class="field"><label>DOE Discount HyCAS % Passthrough</label><input id="fDoeDiscountHycas" type="number" min="0" max="100" step="1" value="${p.doeHycasPassthroughPct}"></div>
         </div>
-        <div class="note" style="margin-top:0">The DOE Subsidy is what the program actually offers; the Passthrough % is how much of that subsidy gets passed to the customer as a lease discount — the rest stays with you as margin. Effective discount = Subsidy % × Passthrough % (e.g. 30% subsidy × 50% passthrough = 15% off lease). Applies only to the <b>monthly lease rate</b>, on top of (not instead of) the volume discount table below — the two stack multiplicatively. Doesn't affect the one-time buy price.</div>
+        <div class="note" style="margin-top:0">The DoE Award is split equally across every trailer and HyCAS unit (e.g. ${money(500000,0)} across 25 units = ${money(20000,0)}/unit). Each unit type's Passthrough % then controls how much of its equal share actually reduces that unit's lease cost — the rest stays with you as margin. Applies only to the <b>monthly lease rate</b>, on top of (not instead of) the volume discount table below. Doesn't affect the one-time buy price.</div>
         <div class="field"><label>Fuel Cells Deployed <span style="color:#AAB2BD;font-weight:400">— assumption used for the per-fuel-cell columns in the Manual Entry table below</span></label><input id="fFuelCellCount" type="number" min="0" step="1" value="${p.manualFuelCellCount!=null?p.manualFuelCellCount:''}" placeholder="e.g. 100"></div>
 
         <div class="subhead">Buy — One-Time Purchase</div>
@@ -4566,6 +4869,22 @@ function wireAutocomplete(inputId, ddId, latId, lonId){
 
 /* ===================== EVENT HANDLERS ===================== */
 function attachHandlers(){
+  const aiChatHeaderToggle = document.getElementById('aiChatHeaderToggle');
+  if(aiChatHeaderToggle) aiChatHeaderToggle.addEventListener('click', ()=>{
+    S.aiChatOpen = !S.aiChatOpen;
+    render();
+    if(S.aiChatOpen){ const inp=document.getElementById('aiChatInput'); if(inp) inp.focus(); }
+  });
+  const aiChatSend = document.getElementById('aiChatSend');
+  const aiChatInput = document.getElementById('aiChatInput');
+  if(aiChatSend && aiChatInput){
+    const doSend = ()=>{ const v=aiChatInput.value; if(v.trim()){ aiChatInputDraft=''; sendAiChatMessage(v); } };
+    aiChatSend.addEventListener('click', doSend);
+    aiChatInput.addEventListener('input', ()=>{ aiChatInputDraft = aiChatInput.value; });
+    aiChatInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); doSend(); } });
+    const msgsEl = document.getElementById('aiChatMessages');
+    if(msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight;
+  }
   wireAutocomplete('fCity','fCityAC','fLat','fLon');
   wireAutocomplete('fSCity','fSCityAC','fSLat','fSLon');
 
@@ -4831,7 +5150,7 @@ function attachHandlers(){
     const hycasLeaseRate = parseFloat(document.getElementById('fLeaseHycas').value);
     const nodeLeaseRate = parseFloat(document.getElementById('fLeaseNode').value);
     const leaseTermMonths = parseFloat(document.getElementById('fLeaseTerm').value);
-    const doeSubsidyPct = parseFloat(document.getElementById('fDoeSubsidy').value)||0;
+    const doeAward = parseFloat(document.getElementById('fDoeSubsidy').value)||0;
     const doeTrailerPassthroughPct = parseFloat(document.getElementById('fDoeDiscountTrailer').value)||0;
     const doeHycasPassthroughPct = parseFloat(document.getElementById('fDoeDiscountHycas').value)||0;
     const fuelCellVal = document.getElementById('fFuelCellCount').value.trim();
@@ -4844,14 +5163,14 @@ function attachHandlers(){
     if(isNaN(hycasLeaseRate)||hycasLeaseRate<0){ alert('Enter a valid, non-negative lease rate per HyCAS unit.'); return; }
     if(isNaN(nodeLeaseRate)||nodeLeaseRate<0){ alert('Enter a valid, non-negative lease rate per node.'); return; }
     if(isNaN(leaseTermMonths)||leaseTermMonths<=0){ alert('Enter a valid lease term in months (greater than 0).'); return; }
-    if(doeSubsidyPct<0||doeSubsidyPct>100){ alert('DOE Subsidy must be between 0 and 100.'); return; }
+    if(doeAward<0){ alert('DoE Award must be a non-negative dollar amount.'); return; }
     if(doeTrailerPassthroughPct<0||doeTrailerPassthroughPct>100||doeHycasPassthroughPct<0||doeHycasPassthroughPct>100){ alert('DOE Discount Passthrough percentages must be between 0 and 100.'); return; }
     if(manualFuelCellCount!=null && (isNaN(manualFuelCellCount)||manualFuelCellCount<0)){ alert('Enter a valid, non-negative fuel cell count.'); return; }
     if(parseTierDays(tierDays).length===0){ alert('Enter at least one valid day value, e.g. "0.5,1,2,3".'); return; }
     S.pricing.trailerPrice = trailerPrice; S.pricing.hycasPrice = hycasPrice; S.pricing.nodePrice = nodePrice;
     S.pricing.trailerLeaseRate = trailerLeaseRate; S.pricing.hycasLeaseRate = hycasLeaseRate; S.pricing.nodeLeaseRate = nodeLeaseRate;
     S.pricing.leaseTermMonths = leaseTermMonths; S.pricing.tierDays = tierDays;
-    S.pricing.doeSubsidyPct = doeSubsidyPct; S.pricing.doeTrailerPassthroughPct = doeTrailerPassthroughPct; S.pricing.doeHycasPassthroughPct = doeHycasPassthroughPct;
+    S.pricing.doeAward = doeAward; S.pricing.doeTrailerPassthroughPct = doeTrailerPassthroughPct; S.pricing.doeHycasPassthroughPct = doeHycasPassthroughPct;
     S.pricing.manualFuelCellCount = manualFuelCellCount;
     render();
   });
@@ -4885,7 +5204,7 @@ function attachHandlers(){
     const name = (nameInput.value||'').trim() || `Output ${S.pricing.outputs.length+1}`;
     const rates = { trailerPrice:S.pricing.trailerPrice, hycasPrice:S.pricing.hycasPrice, nodePrice:S.pricing.nodePrice,
                      trailerLeaseRate:S.pricing.trailerLeaseRate, hycasLeaseRate:S.pricing.hycasLeaseRate, nodeLeaseRate:S.pricing.nodeLeaseRate,
-                     leaseTermMonths:S.pricing.leaseTermMonths, doeSubsidyPct:S.pricing.doeSubsidyPct, doeTrailerPassthroughPct:S.pricing.doeTrailerPassthroughPct, doeHycasPassthroughPct:S.pricing.doeHycasPassthroughPct };
+                     leaseTermMonths:S.pricing.leaseTermMonths, doeAward:S.pricing.doeAward, doeTrailerPassthroughPct:S.pricing.doeTrailerPassthroughPct, doeHycasPassthroughPct:S.pricing.doeHycasPassthroughPct };
     const tiers = computePricingTiers(base, tierDaysList, rates);
     S.pricing.outputs.push({
       name, savedAt: new Date().toISOString(), mode: S.pricing.mode,
@@ -4906,7 +5225,7 @@ function attachHandlers(){
     if(tierDaysList.length===0) return;
     const rates = { trailerPrice:S.pricing.trailerPrice, hycasPrice:S.pricing.hycasPrice, nodePrice:S.pricing.nodePrice,
                      trailerLeaseRate:S.pricing.trailerLeaseRate, hycasLeaseRate:S.pricing.hycasLeaseRate, nodeLeaseRate:S.pricing.nodeLeaseRate,
-                     leaseTermMonths:S.pricing.leaseTermMonths, doeSubsidyPct:S.pricing.doeSubsidyPct, doeTrailerPassthroughPct:S.pricing.doeTrailerPassthroughPct, doeHycasPassthroughPct:S.pricing.doeHycasPassthroughPct };
+                     leaseTermMonths:S.pricing.leaseTermMonths, doeAward:S.pricing.doeAward, doeTrailerPassthroughPct:S.pricing.doeTrailerPassthroughPct, doeHycasPassthroughPct:S.pricing.doeHycasPassthroughPct };
     const tiers = computePricingTiers(base, tierDaysList, rates);
     const isLease = S.pricing.mode==='lease';
     const container = document.getElementById('pricingPrintExport');
@@ -5159,7 +5478,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeSubsidyPct:30,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:3,targetRadius:400,targetHours:6}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
     lastScenario = null;
     render();
   }
