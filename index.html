@@ -2390,6 +2390,47 @@ function buildPricingPrintExport(base, tiers, isLease, rates){
     <div class="ppNote">Pricing reflects current network configuration and applicable volume discounts. Figures are estimates and subject to change.</div>`;
 }
 
+// Landscape pricing report built with the same themed 16:9 SVG/PDF pipeline used by the
+// Optimization Results exports. This avoids browser print-layout differences and gives Pricing
+// the same clean light/dark report format, branding, page sizing, and footer treatment.
+function buildPricingPageSVG(exportTheme, pageTiers, isLease, rates, pageNumber=1, totalPages=1){
+  const fuelCellCount=Math.max(0,Number(S.pricing.manualFuelCellCount)||0);
+  const pageLabel=totalPages>1?` — Page ${pageNumber} of ${totalPages}`:'';
+  const modeLabel=isLease?`${fmt(rates.leaseTermMonths,0)}-month lease`:'purchase';
+  const customer=S.exportBranding.customerName?` · Prepared for ${S.exportBranding.customerName}`:'';
+  const columns=[
+    {label:'Days of Supply',widthFrac:0.14},
+    {label:'HyCAS Units',widthFrac:0.12},
+    {label:'Trailers',widthFrac:0.11},
+    {label:'Nodes Covered',widthFrac:0.13},
+    ...(isLease
+      ? [{label:'Monthly Lease',widthFrac:0.17},{label:`Total Lease (${fmt(rates.leaseTermMonths,0)} mo)`,widthFrac:0.18}]
+      : [{label:'Total Purchase Price',widthFrac:0.35}]),
+    {label:fuelCellCount>0?'Annual / Fuel Cell':'Pricing Mode',widthFrac:0.15},
+  ];
+  const rows=pageTiers.map(t=>{
+    const annual=t.leaseMonthly*12;
+    return [
+      `${fmt(t.days,2)} day${t.days===1?'':'s'}`,
+      `${t.hycasCount}`,
+      `${t.trailers}`,
+      `${t.nodeCount}`,
+      ...(isLease?[`${money(t.leaseMonthly,0)}/mo`,money(t.leaseTotal,0)]:[money(t.buyPrice,0)]),
+      fuelCellCount>0
+        ? (isLease?`${money(annual/fuelCellCount,0)}/yr`:money(t.buyPrice/fuelCellCount,0))
+        : (isLease?'Lease':'Purchase'),
+    ];
+  });
+  const today=new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+  return buildTablePageSVG(
+    exportTheme,
+    'Hydrogen Supply Pricing',
+    `${modeLabel} · Prepared ${today}${customer}${pageLabel}`,
+    columns,
+    rows
+  );
+}
+
 // Budget-constrained network planner. The rest of the app answers "what's the minimum setup
 // that hits my target radius/time?" -- this answers the inverse: "given a fixed dollar budget,
 // what's the best coverage I can get?" Searches hub count and HyCAS count as two independent
@@ -4188,6 +4229,10 @@ function renderPricingTab(){
           <div class="toolbar" style="margin-bottom:0">
             <button class="btn btn-small ${isLease?'btn-primary':'btn-outline'}" data-pricing-mode="lease">Lease</button>
             <button class="btn btn-small ${!isLease?'btn-primary':'btn-outline'}" data-pricing-mode="buy">Buy</button>
+            <select id="pricingExportThemeSelect" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11.5px;background:var(--input-bg);color:var(--text)">
+              <option value="light" ${THEME!=='dark'?'selected':''}>☀ Light PDF</option>
+              <option value="dark" ${THEME==='dark'?'selected':''}>🌙 Dark PDF</option>
+            </select>
             <button class="btn btn-small btn-outline" id="btnExportPricingPdf" ${tiers.length===0?'disabled':''}>⬇ Export Pricing PDF</button>
           </div>
         </div>
@@ -5337,7 +5382,7 @@ function attachHandlers(){
     render();
   });
   const btnExportPricingPdf = document.getElementById('btnExportPricingPdf');
-  if(btnExportPricingPdf) btnExportPricingPdf.addEventListener('click', ()=>{
+  if(btnExportPricingPdf) btnExportPricingPdf.addEventListener('click', async ()=>{
     const base = computePricingBase();
     if(!base) return;
     const tierDaysList = parseTierDays(S.pricing.tierDays);
@@ -5347,9 +5392,31 @@ function attachHandlers(){
                      leaseTermMonths:S.pricing.leaseTermMonths, doeAward:S.pricing.doeAward, doeTrailerPassthroughPct:S.pricing.doeTrailerPassthroughPct, doeHycasPassthroughPct:S.pricing.doeHycasPassthroughPct };
     const tiers = computePricingTiers(base, tierDaysList, rates);
     const isLease = S.pricing.mode==='lease';
-    const container = document.getElementById('pricingPrintExport');
-    container.innerHTML = buildPricingPrintExport(base, tiers, isLease, rates);
-    window.print();
+    const themeSelect=document.getElementById('pricingExportThemeSelect');
+    const exportTheme=themeSelect?themeSelect.value:(THEME==='dark'?'dark':'light');
+    const bg=exportTheme==='dark'?'#0F1620':'#F5F6F8';
+    const dateStr=new Date().toISOString().slice(0,10);
+    btnExportPricingPdf.disabled=true;
+    btnExportPricingPdf.textContent='Building PDF…';
+    try{
+      const perPage=18;
+      const pageCount=Math.max(1,Math.ceil(tiers.length/perPage));
+      const pages=[];
+      for(let page=0;page<pageCount;page++){
+        const svg=buildPricingPageSVG(exportTheme,tiers.slice(page*perPage,(page+1)*perPage),isLease,rates,page+1,pageCount);
+        pages.push(await svgToJpegBytes(svg,bg));
+      }
+      downloadBytes(
+        buildPdfFromJpegs(pages),
+        `h2_network_pricing_${isLease?'lease':'purchase'}_${exportTheme}_${dateStr}.pdf`,
+        'application/pdf'
+      );
+    }catch(error){
+      alert(`Could not create the pricing PDF: ${error.message}`);
+    }finally{
+      btnExportPricingPdf.disabled=false;
+      btnExportPricingPdf.textContent='⬇ Export Pricing PDF';
+    }
   });
   document.querySelectorAll('[data-del-pricing]').forEach(b=>b.addEventListener('click', ()=>{
     if(confirm('Delete this saved pricing output?')){
