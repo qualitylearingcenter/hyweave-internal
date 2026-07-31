@@ -89,6 +89,14 @@
   thead th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;color:var(--grey);border-bottom:1px solid var(--border);padding:7px 8px;font-weight:700;white-space:nowrap;}
   tbody td{padding:8px 8px;border-bottom:1px solid var(--border);vertical-align:middle;white-space:nowrap;color:var(--text);}
   tbody tr:hover{background:var(--hover);}
+  .multi-optimal-row td{background:var(--status-ok-bg);border-top:2px solid var(--status-ok-accent);border-bottom:2px solid var(--status-ok-accent);}
+  .multi-optimal-row td:first-child{border-left:2px solid var(--status-ok-accent);border-radius:7px 0 0 7px;}
+  .multi-optimal-row td:last-child{border-right:2px solid var(--status-ok-accent);border-radius:0 7px 7px 0;}
+  .optimal-hub-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:16px;}
+  .optimal-hub-tile{background:var(--status-ok-bg);border:2px solid var(--status-ok-accent);border-radius:10px;padding:14px 16px;min-width:0;}
+  .optimal-hub-tile .hub-name{font-size:14px;font-weight:800;color:var(--status-ok-accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .optimal-hub-tile .dc-count{font-size:26px;line-height:1.1;font-weight:850;color:var(--heading);margin-top:8px;}
+  .optimal-hub-tile .hub-detail{font-size:10.5px;color:var(--muted);margin-top:5px;}
   .tag{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;}
   .tag-high{background:var(--tag-high-bg);color:var(--tag-high-fg);}
   .tag-med{background:var(--tag-med-bg);color:var(--tag-med-fg);}
@@ -104,6 +112,13 @@
   .maplegend{position:absolute;bottom:14px;left:14px;background:var(--legend-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:11px;box-shadow:0 2px 8px var(--shadow);color:var(--text);}
   .maplegend .item{display:flex;align-items:center;gap:6px;margin:3px 0;}
   .mapwrap{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+  .mapwrap.map-expanded{position:fixed;inset:14px;z-index:1000;max-width:none !important;margin:0 !important;border-radius:12px;box-shadow:0 20px 70px rgba(0,0,0,.55);background:var(--map-bg);display:flex;align-items:center;justify-content:center;}
+  .mapwrap.map-expanded #mapsvg{width:100%;height:100%;cursor:grab;touch-action:none;}
+  .mapwrap.map-expanded #mapsvg.map-panning{cursor:grabbing;}
+  .map-controls{position:absolute;right:12px;top:12px;z-index:60;display:flex;gap:6px;padding:6px;background:var(--legend-bg);border:1px solid var(--border);border-radius:8px;box-shadow:0 2px 8px var(--shadow);}
+  .map-controls .btn{min-width:34px;padding:6px 9px;}
+  .map-expanded .maplegend{max-height:45%;overflow:auto;}
+  body.map-modal-open{overflow:hidden;}
   .maptooltip{position:absolute;pointer-events:none;background:var(--tooltip-bg);color:var(--tooltip-text);padding:8px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;box-shadow:0 4px 14px rgba(0,0,0,.25);display:none;z-index:50;max-width:290px;}
   .maptooltip b{color:var(--tooltip-text);}
   .maptooltip .mut{color:var(--tooltip-muted);}
@@ -564,14 +579,14 @@ function pick(o, keys){ for(const k of keys){ if(o[k]!==undefined && o[k]!=='') 
 function downloadTemplate(kind){
   let csv, filename;
   if(kind==='demand'){
-    csv = 'name,city,lat,lon,rate,safetyDays\nExample Plant,"Houston, TX",29.7604,-95.3698,500,3\n';
+    csv = 'name,city,lat,lon,rate,safetyDays,status\nCurrent Plant,"Houston, TX",29.7604,-95.3698,500,3,current\nFuture Plant,"Phoenix, AZ",33.4484,-112.0740,350,3,future\n';
     filename = 'demand_nodes_template.csv';
   } else if(kind==='asset'){
     csv = 'asset type,quantity,compression capacity,storage capacity\nHyCAS,2,1200,200\nTrailer,4,,1000\nTrailer,3,,750\nMobile Refueler,1,800,500\n';
     filename = 'assets_template.csv';
   } else if(kind==='distanceOverrides'){
     const rows = ['demand_node,supply_source,distance_miles,duration_hours,google_maps_link_click_to_look_up'];
-    S.demand.forEach(n=>{
+    activeDemand().forEach(n=>{
       activeSupply().forEach(s=>{
         const link = `https://www.google.com/maps/dir/?api=1&origin=${n.lat},${n.lon}&destination=${s.lat},${s.lon}&travelmode=driving`;
         rows.push(`"${n.name.replace(/"/g,'""')}","${s.name.replace(/"/g,'""')}",,,${link}`);
@@ -638,10 +653,11 @@ function importDemandCSV(file){
       const safetyDaysRaw = pick(o,['safetydays','safety days','safety_days']);
       const safetyDays = safetyDaysRaw!==undefined ? parseFloat(safetyDaysRaw) : S.params.safetyDays;
       const city = pick(o,['city','location']) || '';
+      const status = String(pick(o,['status','node status','node_status'])||'current').toLowerCase().trim()==='future'?'future':'current';
       if(!name || isNaN(lat) || isNaN(lon) || isNaN(rate)){
         errors.push(`Row ${idx+2}: missing/invalid name, lat, lon, or rate`); return;
       }
-      S.demand.push({id:uid(), name, city, lat, lon, rate, safetyDays: isNaN(safetyDays)?S.params.safetyDays:safetyDays});
+      S.demand.push({id:uid(), name, city, lat, lon, rate, safetyDays: isNaN(safetyDays)?S.params.safetyDays:safetyDays, status, enabled:true});
       added++;
     });
     render();
@@ -705,7 +721,8 @@ let S = {
   activeTab: 'params',
   demandForm: null, // editing id or null
   supplyForm: null,
-  scenarioSourceIds: [], scenarioNodeIds: [], scenarioDays: 3, scenarioTurnaround: 2, notifyEmail: '',
+  scenarioSourceIds: [], scenarioNodeIds: [], scenarioDays: 3, scenarioTurnaround: 2, scenarioResiliency: true,
+  multiCompareSourceIds: [], multiCompareNodeIds: [], multiCompareDays: 1, multiComparePrices: {}, notifyEmail: '',
   showTrailerRadius: true, showHycasRadius: true,
   assets: [], assetForm: null,
   realEstate: [], showRealEstateOverlay: true,
@@ -1009,7 +1026,7 @@ let roadDistanceLastSignature = null;
 let roadDistanceProvider = '';
 
 function networkSignature(){
-  const d = S.demand.map(n=>`${n.id}:${n.lat.toFixed(5)},${n.lon.toFixed(5)}`).join(';');
+  const d = activeDemand().map(n=>`${n.id}:${n.lat.toFixed(5)},${n.lon.toFixed(5)}`).join(';');
   const s = activeSupply().map(x=>`${x.id}:${x.lat.toFixed(5)},${x.lon.toFixed(5)}`).join(';');
   return d + '||' + s;
 }
@@ -1029,7 +1046,7 @@ function nodeSourceDistance(node, source){
 async function refreshRoadDistances(){
   if(!ROUTE_ENDPOINT_URL){ roadDistanceStatus = 'unconfigured'; return; }
   if(typeof fetch !== 'function'){ roadDistanceStatus = 'unconfigured'; roadDistanceError = 'fetch is not available in this environment'; return; }
-  if(S.demand.length===0 || activeSupply().length===0){ roadDistanceStatus = 'idle'; return; }
+  if(activeDemand().length===0 || activeSupply().length===0){ roadDistanceStatus = 'idle'; return; }
   const signature = networkSignature();
   if(signature===roadDistanceLastSignature && (roadDistanceStatus==='ready' || roadDistanceStatus==='error')) return; // nothing changed
   roadDistanceLastSignature = signature;
@@ -1046,7 +1063,7 @@ async function refreshRoadDistances(){
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          origins: S.demand.map(n=>[n.lon, n.lat]),
+          origins: activeDemand().map(n=>[n.lon, n.lat]),
           destinations: supply.map(s=>[s.lon, s.lat]),
         }),
         signal: controller.signal,
@@ -1061,7 +1078,7 @@ async function refreshRoadDistances(){
     const data = await resp.json();
     roadDistanceProvider = data.provider || 'Road routing';
     roadDistanceCache = new Map();
-    S.demand.forEach((n,i)=>{
+    activeDemand().forEach((n,i)=>{
       supply.forEach((s,j)=>{
         roadDistanceCache.set(n.id+'|'+s.id, { distanceMiles: data.distancesMiles[i][j], durationHours: data.durationsHours[i][j] });
       });
@@ -1088,7 +1105,7 @@ async function refreshRoadDistances(){
 function maybeRefreshRoadDistances(){
   if(!ROUTE_ENDPOINT_URL) { roadDistanceStatus = 'unconfigured'; return; }
   if(roadDistanceStatus==='loading') return;
-  if(S.demand.length===0 || activeSupply().length===0) return;
+  if(activeDemand().length===0 || activeSupply().length===0) return;
   if(networkSignature()===roadDistanceLastSignature && (roadDistanceStatus==='ready' || roadDistanceStatus==='error')) return;
   refreshRoadDistances();
 }
@@ -1294,12 +1311,26 @@ function sampleData(){
 }
 
 /* ===================== OPTIMIZATION ===================== */
-// Returns supply sources actually usable in the current scenario: 'current' sources always count,
-// 'future' (planned) sources only count when the Include Future Sources toggle is on. This is what
-// every optimization function should iterate over — never S.supply directly — so toggling instantly
-// re-runs sourcing/hub placement as if those planned sources didn't exist yet.
+// Returns the individually selected supply sources for the current scenario. Older saved files
+// without per-source selection state inherit their former current/future/WMT group toggles, so
+// existing scenarios remain backward compatible.
+function supplySourceSelected(s){
+  if(typeof s.enabled==='boolean') return s.enabled;
+  if(s.isWmtTransfill) return !!S.params.includeWmtTransfill;
+  if((s.status||'current')==='future') return !!S.params.includeFuture;
+  return true;
+}
+
 function activeSupply(){
-  return S.supply.filter(s => ((s.status||'current')!=='future' || S.params.includeFuture) && (!s.isWmtTransfill || S.params.includeWmtTransfill));
+  return S.supply.filter(supplySourceSelected);
+}
+
+function demandNodeSelected(n){
+  return n.enabled!==false;
+}
+
+function activeDemand(){
+  return S.demand.filter(demandNodeSelected);
 }
 
 // Flattens both pressure-type lists into a single array of {key, label, capacity} entries --
@@ -1393,8 +1424,9 @@ function largestTrailerCapacity(){
 
 function computeSourcing(){
   const supply = activeSupply();
+  const demand = activeDemand();
   const pairs = [];
-  S.demand.forEach(n=>{
+  demand.forEach(n=>{
     supply.forEach(s=>{
       const nd = nodeSourceDistance(n, s);
       pairs.push({
@@ -1403,18 +1435,18 @@ function computeSourcing(){
       });
     });
   });
-  const remDemand = {}; S.demand.forEach(n=>remDemand[n.id]=n.rate);
+  const remDemand = {}; demand.forEach(n=>remDemand[n.id]=n.rate);
   const remCap = {}; supply.forEach(s=>remCap[s.id]=s.capacity);
   const flows = [];
 
   // Capacity-aware regret assignment using actual whole-trailer costs. This protects scarce
   // nearby capacity for nodes that would otherwise suffer the largest cost penalty.
   const pairByLane = new Map(pairs.map(p=>[p.nodeId+'|'+p.sourceId,p]));
-  const maxIterations = Math.max(1, S.demand.length*Math.max(1,supply.length)+10);
+  const maxIterations = Math.max(1, demand.length*Math.max(1,supply.length)+10);
   let iterations=0;
   while(iterations++<maxIterations){
     const candidates=[];
-    S.demand.forEach(n=>{
+    demand.forEach(n=>{
       if(remDemand[n.id]<=1e-9) return;
       const options=[];
       supply.forEach(s=>{
@@ -1447,7 +1479,7 @@ function computeSourcing(){
     remCap[chosen.sourceId]-=chosen.amt;
   }
   const nodeSummary = {};
-  S.demand.forEach(n=>{
+  demand.forEach(n=>{
     const nf = flows.filter(f=>f.nodeId===n.id).sort((a,b)=>b.amt-a.amt);
     const unmet = Math.max(0, remDemand[n.id]);
     nodeSummary[n.id] = { flows: nf, unmet, primary: nf[0]||null };
@@ -1463,7 +1495,7 @@ function computeSourcing(){
 function computeBaseRisk(sourcing){
   const supply = activeSupply();
   const raw = {};
-  S.demand.forEach(n=>{
+  activeDemand().forEach(n=>{
     const summary = sourcing.nodeSummary[n.id];
     const primary = summary.primary;
     let primaryDist, primaryHours;
@@ -1527,7 +1559,7 @@ function computeFinalRisk(baseRisk, hubs, coLocatedHycasUnits){
     });
   });
   const combined = {};
-  S.demand.forEach(n=>{
+  activeDemand().forEach(n=>{
     const cov = coverage[n.id];
     const base = baseRisk[n.id];
     const hasShortfall = base.unmet>0;
@@ -1677,7 +1709,7 @@ function placementSitesFromCenters(centers){
 
 function placementFacilityCandidates(){
   return [
-    ...S.demand.map(n=>({id:n.id,lat:n.lat,lon:n.lon,name:n.name,type:'Demand Node'})),
+    ...activeDemand().map(n=>({id:n.id,lat:n.lat,lon:n.lon,name:n.name,type:'Demand Node'})),
     ...activeSupply().map(s=>({id:s.id,lat:s.lat,lon:s.lon,name:s.name,type:'Supply Source'})),
   ];
 }
@@ -1694,7 +1726,7 @@ function nearestExistingFacility(lat,lon,excludeId){
 }
 
 function assignDemandToPlacementSites(sites){
-  return S.demand.map(n=>{
+  return activeDemand().map(n=>{
     let best=0, bestDist=Infinity;
     sites.forEach((site,i)=>{
       const d=haversineMiles(n.lat,n.lon,site.lat,site.lon);
@@ -1705,15 +1737,16 @@ function assignDemandToPlacementSites(sites){
 }
 
 function buildHubsForK(baseRisk, k){
-  if(S.demand.length===0) return [];
-  const pts = S.demand.map(n=>albersXY(n.lat,n.lon));
-  const weights = S.demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
+  const demand=activeDemand();
+  if(demand.length===0) return [];
+  const pts = demand.map(n=>albersXY(n.lat,n.lon));
+  const weights = demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
   const {centers} = weightedKMeans(pts, weights, k, 60);
   const sites = placementSitesFromCenters(centers);
   const assign = assignDemandToPlacementSites(sites);
 
   return sites.map((site, ci)=>{
-    const covered = S.demand.filter((n,i)=>assign[i]===ci);
+    const covered = demand.filter((n,i)=>assign[i]===ci);
     if(covered.length===0) return null;
     const cLat=site.lat, cLon=site.lon;
     const cityRef = site.townResolved
@@ -1837,8 +1870,9 @@ function resolveHubRealLocations(hubs){
 }
 
 function computeAutoHubs(baseRisk){
-  if(S.demand.length===0) return {hubs:[],k:0,achievedMaxDist:0,achievedMaxHours:0,metTarget:true,searchCapped:false,optimal:true};
-  const cap = Math.min(S.demand.length, 40);
+  const demand=activeDemand();
+  if(demand.length===0) return {hubs:[],k:0,achievedMaxDist:0,achievedMaxHours:0,metTarget:true,searchCapped:false,optimal:true};
+  const cap = Math.min(demand.length, 40);
   const searchSignature = `${networkSignature()}|${S.params.targetRadius}|${S.params.targetHours}`;
   if(searchSignature!==hubRoadSearchSignature){
     hubRoadSearchSignature=searchSignature;
@@ -1887,15 +1921,16 @@ function computeAutoHubs(baseRisk){
 // weighted-clustering approach as hub placement but with its own independent radius/time targets
 // and a per-unit throughput capacity check instead of a trailer volume calculation.
 function buildHycasForK(baseRisk, k){
-  if(S.demand.length===0) return [];
-  const pts = S.demand.map(n=>albersXY(n.lat,n.lon));
-  const weights = S.demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
+  const demand=activeDemand();
+  if(demand.length===0) return [];
+  const pts = demand.map(n=>albersXY(n.lat,n.lon));
+  const weights = demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
   const {centers} = weightedKMeans(pts, weights, k, 60);
   const sites = placementSitesFromCenters(centers);
   const assign = assignDemandToPlacementSites(sites);
 
   return sites.map((site, ci)=>{
-    const covered = S.demand.filter((n,i)=>assign[i]===ci);
+    const covered = demand.filter((n,i)=>assign[i]===ci);
     if(covered.length===0) return null;
     const cLat=site.lat, cLon=site.lon;
     const cityRef = site.townResolved
@@ -1923,8 +1958,9 @@ function buildHycasForK(baseRisk, k){
 }
 
 function computeAutoHycas(baseRisk){
-  if(S.demand.length===0) return {units:[], k:0, achievedMaxDist:0, achievedMaxHours:0, metTarget:true, searchCapped:false};
-  const cap = Math.min(S.demand.length, 40);
+  const demand=activeDemand();
+  if(demand.length===0) return {units:[], k:0, achievedMaxDist:0, achievedMaxHours:0, metTarget:true, searchCapped:false};
+  const cap = Math.min(demand.length, 40);
   const searchSignature = `${networkSignature()}|${S.params.hycasRadius}|${S.params.hycasHours}`;
   if(searchSignature!==hycasRoadSearchSignature){
     hycasRoadSearchSignature=searchSignature;
@@ -2047,16 +2083,17 @@ function expandedAssetsForPlacement(category){
 //    a safety-stock buffer, same reasoning as trailer staging (a storage asset's volume gets
 //    drawn down by everything it covers, not just one node at a time).
 function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays){
-  if(S.demand.length===0 || assetList.length===0) return [];
-  const k = Math.max(1, Math.min(assetList.length, S.demand.length));
-  const pts = S.demand.map(n=>albersXY(n.lat,n.lon));
-  const weights = S.demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
+  const demand=activeDemand();
+  if(demand.length===0 || assetList.length===0) return [];
+  const k = Math.max(1, Math.min(assetList.length, demand.length));
+  const pts = demand.map(n=>albersXY(n.lat,n.lon));
+  const weights = demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
   const {centers} = weightedKMeans(pts, weights, k, 60);
   const sites = placementSitesFromCenters(centers);
   const assign = assignDemandToPlacementSites(sites);
 
   const clusters = sites.map((site, ci)=>{
-    const covered = S.demand.filter((n,i)=>assign[i]===ci);
+    const covered = demand.filter((n,i)=>assign[i]===ci);
     if(covered.length===0) return null;
     const cLat=site.lat, cLon=site.lon;
     const cityRef = site.townResolved
@@ -2106,7 +2143,7 @@ function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays){
 }
 
 function computeAssetPlacement(){
-  if(S.demand.length===0) return {
+  if(activeDemand().length===0) return {
     compression: { assets:[], achievedMaxDist:0, achievedMaxHours:0, withinTarget:true, anyCapacityShortfall:false },
     storage: { assets:[], achievedMaxDist:0, achievedMaxHours:0, withinTarget:true, anyCapacityShortfall:false },
   };
@@ -2131,7 +2168,7 @@ function computeAssetPlacement(){
 }
 
 function computeKPIs(sourcing, riskMap, hubs, hycasUnits){
-  const totalDemand = S.demand.reduce((a,n)=>a+n.rate,0);
+  const totalDemand = activeDemand().reduce((a,n)=>a+n.rate,0);
   const totalCost = sourcing.flows.reduce((a,f)=>a+f.totalCost,0);
   const coLocatedPlans = (hycasUnits||[]).filter(u=>u.coLocatedTrailerPlan).map(u=>u.coLocatedTrailerPlan);
   const totalStagingCost = hubs.reduce((a,h)=>a+h.stagingCost,0) + (hycasUnits||[]).reduce((a,u)=>a+(u.coLocatedStagingCost||0),0);
@@ -2170,7 +2207,7 @@ function computeScenario(sourceIds, nodeIds, outageDays, turnaroundHours){
   const baseHubs = baseHubPlan.hubs;
   const baseRisk = computeFinalRisk(baseBaseRisk, baseHubs);
 
-  const affected = S.demand.filter(n=>{
+  const affected = activeDemand().filter(n=>{
     const primary = baseSourcing.nodeSummary[n.id].primary;
     const sourceDown = primary && disruptedSourceIds.has(primary.sourceId);
     return sourceDown || directlyDownIds.has(n.id);
@@ -2224,7 +2261,130 @@ function computeScenario(sourceIds, nodeIds, outageDays, turnaroundHours){
     return { hub:g.hub, nodes:g.nodes, totalAffectedDemand, totalNeedOverOutage, bufferAvailable, bufferDaysCovered, bufferSufficient, allShuttlesSufficient };
   }).sort((a,b)=> (a.hub?a.hub.idx:999) - (b.hub?b.hub.idx:999));
 
-  return { disruptedSources, directlyDownIds, outageDays, turnaroundHours, affected, nodeResults, hubRollups, altSupplyCount: altSupply.length };
+  return { mode:'resiliency', disruptedSources, directlyDownIds, outageDays, turnaroundHours, affected, nodeResults, hubRollups, altSupplyCount: altSupply.length };
+}
+
+// Direct-service comparison used when the Scenario Planning "Resiliency" checkbox is off.
+// One selected source serves the selected demand nodes at their stored consumption rates for
+// the chosen service period. Each trailer movement includes a loaded outbound leg and an empty
+// return leg, making the mileage and cost comparison transparent when the source is changed.
+function computeDirectServiceScenario(sourceId,nodeIds,serviceDays){
+  const source=activeSupply().find(s=>s.id===sourceId);
+  const nodes=activeDemand().filter(n=>nodeIds.includes(n.id));
+  if(!source||nodes.length===0) return null;
+  const results=nodes.map(node=>{
+    const volume=node.rate*serviceDays;
+    const trailerPlan=trailerPlanForVolume(volume);
+    const lane=nodeSourceDistance(node,source);
+    const loadedMiles=lane.dist*trailerPlan.count;
+    const returnMiles=lane.dist*trailerPlan.count;
+    const transportationMiles=loadedMiles+returnMiles;
+    const transportationCost=transportationMiles*(Number(S.params.costPerMile)||0);
+    const moleculeCost=volume*source.cost;
+    return {
+      node,source,serviceDays,volume,trailerPlan,lane,
+      loadedMiles,returnMiles,transportationMiles,transportationCost,moleculeCost,
+      allInCost:transportationCost+moleculeCost,
+    };
+  });
+  return {
+    mode:'direct',source,nodes,serviceDays,results,
+    dailyDemand:nodes.reduce((a,n)=>a+n.rate,0),
+    sourceCapacitySufficient:nodes.reduce((a,n)=>a+n.rate,0)<=source.capacity,
+  };
+}
+
+// Multi-source direct-service comparison. Every selected source is priced against every
+// selected demand site. The lowest all-in option that can meet a site's daily consumption
+// is marked as that site's winner; insufficient-capacity lanes remain visible for context.
+function computeMultiSourceComparison(sourceIds,nodeIds,serviceDays){
+  const sourceIdSet=new Set(sourceIds);
+  const nodeIdSet=new Set(nodeIds);
+  const sources=activeSupply().filter(s=>sourceIdSet.has(s.id));
+  const nodes=activeDemand().filter(n=>nodeIdSet.has(n.id));
+  if(sources.length===0||nodes.length===0) return null;
+  const results=[];
+  nodes.forEach(node=>{
+    sources.forEach(source=>{
+      const volume=node.rate*serviceDays;
+      const trailerPlan=trailerPlanForVolume(volume);
+      const lane=nodeSourceDistance(node,source);
+      const transportationMiles=lane.dist*trailerPlan.count*2;
+      const transportationCost=transportationMiles*(Number(S.params.costPerMile)||0);
+      const priceOverride=S.multiComparePrices&&S.multiComparePrices[source.id];
+      const unitPrice=Number.isFinite(Number(priceOverride))&&Number(priceOverride)>=0
+        ? Number(priceOverride)
+        : (Number(source.cost)||0);
+      const moleculeCost=volume*unitPrice;
+      results.push({
+        node,source,serviceDays,volume,trailerPlan,lane,transportationMiles,
+        transportationCost,unitPrice,moleculeCost,allInCost:transportationCost+moleculeCost,
+        sourceCapacitySufficient:node.rate<=source.capacity,
+        isOptimal:false,
+      });
+    });
+  });
+  nodes.forEach(node=>{
+    const feasible=results.filter(r=>r.node.id===node.id&&r.sourceCapacitySufficient);
+    if(feasible.length){
+      feasible.sort((a,b)=>a.allInCost-b.allInCost)[0].isOptimal=true;
+    }
+  });
+  results.sort((a,b)=>{
+    const nodeOrder=nodes.findIndex(n=>n.id===a.node.id)-nodes.findIndex(n=>n.id===b.node.id);
+    if(nodeOrder) return nodeOrder;
+    if(a.isOptimal!==b.isOptimal) return a.isOptimal?-1:1;
+    return a.allInCost-b.allInCost;
+  });
+  return {mode:'multi-direct',sources,nodes,serviceDays,results};
+}
+
+// Builds the four scenario cost blocks and the exact mileage-leg audit trail behind them.
+// Resiliency mode counts the initial one-way emergency response to each impacted facility.
+// Direct mode counts every loaded source-to-node leg and its empty return for every required trip.
+function scenarioCostSummary(sc){
+  if(!sc) return {hasImpact:false,impactedFacilities:0,miles:0,transportationCost:0,moleculeCost:0,allInCost:0,legs:[],molecules:[]};
+  if(sc.mode==='direct'){
+    const legs=[];
+    const molecules=[];
+    (sc.results||[]).forEach(r=>{
+      legs.push({from:r.source.name,to:r.node.name,kind:'Loaded delivery',distance:r.lane.dist,trips:r.trailerPlan.count,miles:r.loadedMiles});
+      legs.push({from:r.node.name,to:r.source.name,kind:'Empty return',distance:r.lane.dist,trips:r.trailerPlan.count,miles:r.returnMiles});
+      molecules.push({node:r.node.name,source:r.source.name,volume:r.volume,unitCost:r.source.cost,cost:r.moleculeCost});
+    });
+    const miles=(sc.results||[]).reduce((a,r)=>a+r.transportationMiles,0);
+    const moleculeCost=(sc.results||[]).reduce((a,r)=>a+r.moleculeCost,0);
+    const transportationCost=miles*(Number(S.params.costPerMile)||0);
+    return {
+      hasImpact:(sc.results||[]).length>0,impactedFacilities:(sc.results||[]).length,
+      miles,transportationCost,moleculeCost,allInCost:transportationCost+moleculeCost,legs,molecules,
+    };
+  }
+  if(!Array.isArray(sc.nodeResults)||sc.nodeResults.length===0){
+    return {hasImpact:false,impactedFacilities:0,miles:0,transportationCost:0,moleculeCost:0,allInCost:0,legs:[],molecules:[]};
+  }
+  const legs=[];
+  const molecules=[];
+  let moleculeCost=0;
+  sc.nodeResults.forEach(nr=>{
+    const useHub=nr.responseDist!==null&&nr.responseDist!==undefined&&Number.isFinite(Number(nr.responseDist));
+    const distance=useHub?Number(nr.responseDist):(Number.isFinite(Number(nr.bestAltDist))?Number(nr.bestAltDist):0);
+    const from=useHub&&nr.hub?`Hub ${nr.hub.idx}`:(nr.bestAlt?nr.bestAlt.name:'No available origin');
+    legs.push({from,to:nr.node.name,kind:useHub?'Initial staged response':'Alternate-source response',distance,trips:1,miles:distance});
+    const procurementSource=nr.bestAlt||(nr.hub&&nr.hub.stagingSource)||null;
+    if(procurementSource){
+      const volume=nr.node.rate*sc.outageDays;
+      const cost=volume*procurementSource.cost;
+      moleculeCost+=cost;
+      molecules.push({node:nr.node.name,source:procurementSource.name,volume,unitCost:procurementSource.cost,cost});
+    }
+  });
+  const miles=legs.reduce((a,l)=>a+l.miles,0);
+  const transportationCost=miles*(Number(S.params.costPerMile)||0);
+  return {
+    hasImpact:true,impactedFacilities:sc.nodeResults.length,
+    miles,transportationCost,moleculeCost,allInCost:transportationCost+moleculeCost,legs,molecules,
+  };
 }
 
 // Builds the subject/body text for an outage notification — shared by both delivery paths below.
@@ -2300,12 +2460,12 @@ async function sendOutageNotification(sc){
 // does — so we compute the cluster layout once and re-price trailers per day-tier from there,
 // rather than re-running the clustering search for every tier.
 function computePricingBase(){
-  if(S.demand.length===0 || S.supply.length===0) return null;
+  if(activeDemand().length===0 || activeSupply().length===0) return null;
   const sourcing = computeSourcing();
   const baseRisk = computeBaseRisk(sourcing);
   const hubPlan = computeAutoHubs(baseRisk);
   const hycasPlan = computeAutoHycas(baseRisk);
-  return { hubs: hubPlan.hubs, hycasCount: hycasPlan.units.length, nodeCount: S.demand.length };
+  return { hubs: hubPlan.hubs, hycasCount: hycasPlan.units.length, nodeCount: activeDemand().length };
 }
 
 function trailersForDaySupply(hubs, days){
@@ -2487,13 +2647,13 @@ function buildPricingPageSVG(exportTheme, pageTiers, isLease, rates, pageNumber=
 // tabs already use -- straight-line placement for search speed, exactly like the auto-search
 // does before real routing resolves, with the same honest caveat about that.
 function computeBudgetConstrainedPlan(budgetDollars, mode){
-  if(S.demand.length===0 || S.supply.length===0) return { error:'Add at least one demand node and one supply source first.' };
+  if(activeDemand().length===0 || activeSupply().length===0) return { error:'Select at least one demand node and one supply source first.' };
   if(!(budgetDollars>0)) return { error:'Budget must be a positive dollar amount.' };
   mode = mode==='buy' ? 'buy' : 'lease';
 
   const sourcing = computeSourcing();
   const baseRisk = computeBaseRisk(sourcing);
-  const maxK = Math.min(S.demand.length, 40);
+  const maxK = Math.min(activeDemand().length, 40);
   const hubCache = new Map(), hycasCache = new Map();
   const getHubs = k => { if(!hubCache.has(k)) hubCache.set(k, buildHubsForK(baseRisk,k)); return hubCache.get(k); };
   const getHycas = k => { if(!hycasCache.has(k)) hycasCache.set(k, buildHycasForK(baseRisk,k)); return hycasCache.get(k); };
@@ -2521,7 +2681,7 @@ function computeBudgetConstrainedPlan(budgetDollars, mode){
   }
   function weightedUncovered(hubs, hycasUnits){
     const risk = computeFinalRisk(baseRisk, hubs, hycasUnits);
-    return S.demand.reduce((a,n)=> a + (risk[n.id].tier==='High' ? n.rate : 0), 0);
+    return activeDemand().reduce((a,n)=> a + (risk[n.id].tier==='High' ? n.rate : 0), 0);
   }
 
   function bestHubJump(){
@@ -2576,14 +2736,14 @@ function computeBudgetConstrainedPlan(budgetDollars, mode){
   }
 
   const risk = computeFinalRisk(baseRisk, hubs, hycasUnits);
-  const highRiskNodes = S.demand.filter(n=>risk[n.id].tier==='High');
+  const highRiskNodes = activeDemand().filter(n=>risk[n.id].tier==='High');
   const trailers = hubs.reduce((a,h)=>a+h.trailers,0);
   return {
     mode, budgetDollars, spentDollars:cost, remainingDollars:budgetDollars-cost,
     hubCount:hubK, hycasCount:hycasK, trailerCount:trailers,
     hubs, hycasUnits,
-    totalDemand: S.demand.reduce((a,n)=>a+n.rate,0),
-    coveredDemandPct: (()=>{ const total=S.demand.reduce((a,n)=>a+n.rate,0); return total>0?100*(1-uncovered/total):100; })(),
+    totalDemand: activeDemand().reduce((a,n)=>a+n.rate,0),
+    coveredDemandPct: (()=>{ const total=activeDemand().reduce((a,n)=>a+n.rate,0); return total>0?100*(1-uncovered/total):100; })(),
     highRiskNodeCount: highRiskNodes.length,
     highRiskNodeNames: highRiskNodes.map(n=>n.name),
     roadValidated: hubs.every(h=>h.reachIsReal!==false) && hycasUnits.every(u=>u.reachIsReal!==false),
@@ -2684,8 +2844,9 @@ function addDemandRows(objs){
     const rate=parseFloat(pick(o,['rate','consumption rate','consumption_rate']));
     const raw=pick(o,['safetydays','safety days','safety_days']);
     const safetyDays=raw!==undefined?parseFloat(raw):S.params.safetyDays;
+    const status=String(pick(o,['status','node status','node_status'])||'current').toLowerCase().trim()==='future'?'future':'current';
     if(!name||isNaN(lat)||isNaN(lon)||isNaN(rate)){ errors.push(`row ${idx+2}`); return; }
-    S.demand.push({id:uid(),name,city:pick(o,['city','location'])||'',lat,lon,rate,safetyDays:isNaN(safetyDays)?S.params.safetyDays:safetyDays}); added++;
+    S.demand.push({id:uid(),name,city:pick(o,['city','location'])||'',lat,lon,rate,safetyDays:isNaN(safetyDays)?S.params.safetyDays:safetyDays,status,enabled:true}); added++;
   });
   return {added,errors};
 }
@@ -2828,6 +2989,34 @@ function render(){
 /* ===================== RENDER: DEMAND TAB ===================== */
 function renderDemandTab(){
   const editing = S.demand.find(n=>n.id===S.demandForm);
+  const editStatus=editing?(editing.status||'current'):'current';
+  const current=S.demand.filter(n=>(n.status||'current')!=='future').sort((a,b)=>naturalCompare(a.name,b.name));
+  const future=S.demand.filter(n=>(n.status||'current')==='future').sort((a,b)=>naturalCompare(a.name,b.name));
+
+  function demandRows(list,group){
+    if(list.length===0) return '<div class="empty">None yet.</div>';
+    return `<table><thead><tr><th style="width:42px;text-align:center">Use</th><th>Name</th><th>Location</th><th>Rate (${S.params.unit}/day)</th><th>Safety Days</th><th></th></tr></thead>
+      <tbody>${list.map(n=>`
+        <tr>
+          <td style="text-align:center"><input type="checkbox" class="demand-node-check" data-toggle-demand="${n.id}" data-demand-group="${group}" ${demandNodeSelected(n)?'checked':''} aria-label="Use ${esc(n.name)} in optimization" style="width:17px;height:17px;cursor:pointer"></td>
+          <td><b>${esc(n.name)}</b></td>
+          <td>${esc(n.city||'')} <span style="color:#AAB2BD">(${n.lat.toFixed(2)}, ${n.lon.toFixed(2)})</span></td>
+          <td>${fmt(n.rate)}</td>
+          <td>${n.safetyDays}</td>
+          <td>
+            <button class="btn btn-small btn-outline" data-edit-demand="${n.id}">Edit</button>
+            <button class="btn btn-small btn-danger" data-del-demand="${n.id}">Delete</button>
+          </td>
+        </tr>`).join('')}</tbody></table>`;
+  }
+  function groupToggle(list,group){
+    const selected=list.filter(demandNodeSelected).length;
+    return `<label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:${selected?'var(--green)':'var(--muted)'};cursor:pointer">
+      <input type="checkbox" class="demand-group-check" data-demand-group-toggle="${group}" data-selected="${selected}" data-total="${list.length}" ${list.length>0&&selected===list.length?'checked':''} ${list.length?'':'disabled'} style="width:17px;height:17px;cursor:pointer">
+      Select all (${selected}/${list.length})
+    </label>`;
+  }
+
   return `
   <div class="grid2">
     <div>
@@ -2848,32 +3037,36 @@ function renderDemandTab(){
           <div class="field"><label>Consumption Rate (${S.params.unit}/day)</label><input id="fRate" type="number" step="1" value="${editing?editing.rate:''}"></div>
           <div class="field"><label>Target Safety Stock (days)</label><input id="fSafety" type="number" step="1" value="${editing?editing.safetyDays:S.params.safetyDays}"></div>
         </div>
+        <div class="field">
+          <label>Node Status</label>
+          <select id="fDemandStatus">
+            <option value="current" ${editStatus==='current'?'selected':''}>Current — operational today</option>
+            <option value="future" ${editStatus==='future'?'selected':''}>Future — planned / not yet active</option>
+          </select>
+        </div>
         <div class="toolbar" style="margin-top:6px">
           <button class="btn btn-primary" id="btnSaveDemand">${editing?'Save Changes':'Add Node'}</button>
           ${editing?'<button class="btn btn-outline" id="btnCancelDemand">Cancel</button>':''}
         </div>
       </div>
     </div>
-    <div class="card">
-      <div class="flexbetween">
-        <h2 style="margin-bottom:0">Demand Nodes (${S.demand.length})</h2>
+    <div>
+      <div class="card">
+        <div class="flexbetween">
+          <h2 style="margin-bottom:0">Current Demand Nodes (${current.length})</h2>
+          ${groupToggle(current,'current')}
+        </div>
+        <p class="desc">Operational demand locations. Select individual nodes or use Select all for the complete group.</p>
+        ${demandRows(current,'current')}
       </div>
-      <p class="desc">Locations requiring gas supply. Bulk files are loaded from Input Parameters.</p>
-      ${S.demand.length===0?'<div class="empty">No demand nodes yet. Add one on the left, import files on Input Parameters, or click "Load Sample Data" in the header.</div>':`
-      <table><thead><tr><th>Name</th><th>Location</th><th>Rate (${S.params.unit}/day)</th><th>Safety Days</th><th></th></tr></thead>
-      <tbody>
-      ${[...S.demand].sort((a,b)=>naturalCompare(a.name,b.name)).map(n=>`
-        <tr>
-          <td><b>${esc(n.name)}</b></td>
-          <td>${esc(n.city||'')} <span style="color:#AAB2BD">(${n.lat.toFixed(2)}, ${n.lon.toFixed(2)})</span></td>
-          <td>${fmt(n.rate)}</td>
-          <td>${n.safetyDays}</td>
-          <td>
-            <button class="btn btn-small btn-outline" data-edit-demand="${n.id}">Edit</button>
-            <button class="btn btn-small btn-danger" data-del-demand="${n.id}">Delete</button>
-          </td>
-        </tr>`).join('')}
-      </tbody></table>`}
+      <div class="card" style="border-color:${future.some(demandNodeSelected)?'#CDE9DC':'var(--border)'}">
+        <div class="flexbetween">
+          <h2 style="margin-bottom:0">Future Demand Nodes (${future.length})</h2>
+          ${groupToggle(future,'future')}
+        </div>
+        <p class="desc">Planned demand locations. Check only the future nodes to include in the optimization scenario, or use Select all.</p>
+        ${demandRows(future,'future')}
+      </div>
     </div>
   </div>`;
 }
@@ -2888,9 +3081,9 @@ function pressureLaneDiagnostics(){
   const active = activeSupply();
   const hpCount = active.filter(s=>s.highPressureCapable!==false).length;
   const lpCount = active.filter(s=>s.lowPressureCapable!==false).length;
-  if(S.demand.length===0 || active.length===0) return {hpCount, lpCount, total:active.length, longLanes:[]};
+  if(activeDemand().length===0 || active.length===0) return {hpCount, lpCount, total:active.length, longLanes:[]};
   const sourcing = computeSourcing();
-  const longLanes = S.demand.map(n=>{
+  const longLanes = activeDemand().map(n=>{
     const summary = sourcing.nodeSummary[n.id];
     const primary = summary ? summary.primary : null;
     if(!primary) return null;
@@ -2909,12 +3102,13 @@ function renderSupplyTab(){
   const current = S.supply.filter(s=>(s.status||'current')!=='future' && !s.isWmtTransfill).sort((a,b)=>a.name.localeCompare(b.name));
   const future = S.supply.filter(s=>(s.status||'current')==='future' && !s.isWmtTransfill).sort((a,b)=>a.name.localeCompare(b.name));
 
-  function supplyRows(list){
+  function supplyRows(list, groupKey){
     if(list.length===0) return '<div class="empty">None yet.</div>';
-    return `<table><thead><tr><th>Name</th><th>Location</th><th>Capacity (${S.params.unit}/day)</th><th>Cost ($/${S.params.unit})</th><th></th></tr></thead>
+    return `<table><thead><tr><th style="width:42px;text-align:center">Use</th><th>Name</th><th>Location</th><th>Capacity (${S.params.unit}/day)</th><th>Cost ($/${S.params.unit})</th><th></th></tr></thead>
       <tbody>
       ${list.map(n=>`
         <tr>
+          <td style="text-align:center"><input type="checkbox" class="supply-source-check" data-toggle-supply="${n.id}" data-supply-group="${groupKey}" ${supplySourceSelected(n)?'checked':''} aria-label="Use ${esc(n.name)} in optimization" style="width:17px;height:17px;cursor:pointer"></td>
           <td><b>${esc(n.name)}</b></td>
           <td>${esc(n.city||'')} <span style="color:#AAB2BD">(${n.lat.toFixed(2)}, ${n.lon.toFixed(2)})</span></td>
           <td>${fmt(n.capacity)}</td>
@@ -2925,6 +3119,15 @@ function renderSupplyTab(){
           </td>
         </tr>`).join('')}
       </tbody></table>`;
+  }
+
+  function groupToggle(list, groupKey, label){
+    const selected=list.filter(supplySourceSelected).length;
+    const checked=list.length>0 && selected===list.length;
+    return `<label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:${selected?'var(--blue)':'var(--muted)'};cursor:pointer">
+      <input type="checkbox" class="supply-group-check" data-supply-group-toggle="${groupKey}" data-selected="${selected}" data-total="${list.length}" ${checked?'checked':''} ${list.length?'':'disabled'} style="width:17px;height:17px;cursor:pointer">
+      ${label} (${selected}/${list.length})
+    </label>`;
   }
 
   return `
@@ -2981,35 +3184,26 @@ function renderSupplyTab(){
       <div class="card">
         <div class="flexbetween">
           <h2 style="margin-bottom:0">Current Supply Sources (${current.length})</h2>
+          ${groupToggle(current,'current','Select group')}
         </div>
-        <p class="desc">Operational today. Always included in the optimization. Bulk files are loaded from Input Parameters.</p>
-        ${supplyRows(current)}
+        <p class="desc">Operational today. Check individual sources, or use the group checkbox to select all locations.</p>
+        ${supplyRows(current,'current')}
       </div>
-      <div class="card" style="border-color:${S.params.includeFuture?'#CDE0F5':'var(--border)'}">
+      <div class="card" style="border-color:${future.some(supplySourceSelected)?'#CDE0F5':'var(--border)'}">
         <div class="flexbetween">
           <h2 style="margin-bottom:0">Future / Planned Supply Sources (${future.length})</h2>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:${S.params.includeFuture?'var(--blue)':'var(--muted)'};cursor:pointer">
-            <input type="checkbox" id="chkIncludeFuture" ${S.params.includeFuture?'checked':''} style="width:16px;height:16px;cursor:pointer">
-            Include in optimization
-          </label>
+          ${groupToggle(future,'future','Select group')}
         </div>
-        <p class="desc">Not yet operational (under construction, permitted, or proposed). ${S.params.includeFuture
-          ? 'Currently <b>included</b> — sourcing, hub placement, and risk all treat these as available capacity.'
-          : 'Currently <b>excluded</b> — toggle on above to see how the network performs once these come online.'}</p>
-        ${supplyRows(future)}
+        <p class="desc">Under construction, permitted, or proposed. Select only the locations you want included in this optimization run.</p>
+        ${supplyRows(future,'future')}
       </div>
-      <div class="card" style="border-color:${S.params.includeWmtTransfill?'#CDE0F5':'var(--border)'}">
+      <div class="card" style="border-color:${wmtTransfill.some(supplySourceSelected)?'#CDE0F5':'var(--border)'}">
         <div class="flexbetween">
           <h2 style="margin-bottom:0">WMT Transfill Sites (${wmtTransfill.length})</h2>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:${S.params.includeWmtTransfill?'var(--blue)':'var(--muted)'};cursor:pointer">
-            <input type="checkbox" id="chkIncludeWmtTransfill" ${S.params.includeWmtTransfill?'checked':''} style="width:16px;height:16px;cursor:pointer">
-            Include in optimization
-          </label>
+          ${groupToggle(wmtTransfill,'wmt','Select group')}
         </div>
-        <p class="desc">Customer-owned sites (not your own infrastructure) available for high-pressure gas. ${S.params.includeWmtTransfill
-          ? 'Currently <b>included</b> — sourcing, hub placement, and risk all treat these as available capacity.'
-          : 'Currently <b>excluded</b> — toggle on above to bring these into the network.'}</p>
-        ${supplyRows(wmtTransfill)}
+        <p class="desc">Customer-owned sites available for high-pressure gas. Select the individual sites to make available to the model.</p>
+        ${supplyRows(wmtTransfill,'wmt')}
       </div>
     </div>
   </div>
@@ -3260,7 +3454,7 @@ function renderParamsTab(){
 let lastComputed = null;
 function sourcingDistanceBadge(){
   const overrideCount=S.distanceOverrides.length;
-  const totalPairs=S.demand.length*activeSupply().length;
+  const totalPairs=activeDemand().length*activeSupply().length;
   if(totalPairs>0 && overrideCount>=totalPairs){
     return '<span class="tag tag-low">\u2713 Real road distances (manual overrides)</span>';
   }
@@ -3486,16 +3680,16 @@ const AI_TOOLS = [
 
 function executeAiTool(name, input){
   try{
-    if(S.demand.length===0 || S.supply.length===0) return {error:'No demand nodes or supply sources are configured yet -- add those first.'};
+    if(activeDemand().length===0 || activeSupply().length===0) return {error:'No demand nodes or supply sources are selected yet.'};
     if(name==='get_network_summary'){
       const sourcing = computeSourcing();
       const baseRisk = computeBaseRisk(sourcing);
       const hubPlan = computeAutoHubs(baseRisk);
       const hycasPlan = computeAutoHycas(baseRisk);
       return {
-        demandNodeCount: S.demand.length,
+        demandNodeCount: activeDemand().length,
         supplySourceCount: activeSupply().length,
-        totalDemandPerDay: Math.round(S.demand.reduce((a,n)=>a+n.rate,0)),
+        totalDemandPerDay: Math.round(activeDemand().reduce((a,n)=>a+n.rate,0)),
         unit: S.params.unit,
         targetDeliveryRadiusMiles: S.params.targetRadius,
         targetMaxResupplyHours: S.params.targetHours,
@@ -3594,6 +3788,12 @@ function renderResultsTab(){
   if(S.demand.length===0 || S.supply.length===0){
     return `<div class="card"><div class="empty">Add at least one demand node and one supply source to see optimization results.</div></div>`;
   }
+  if(activeSupply().length===0){
+    return `<div class="card"><div class="empty">No supply sources are selected. Return to Supply Sources and check at least one location or source group.</div></div>`;
+  }
+  if(activeDemand().length===0){
+    return `<div class="card"><div class="empty">No demand nodes are selected. Return to Demand Nodes and check at least one location or node group.</div></div>`;
+  }
   const sourcing = computeSourcing();
   const baseRisk = computeBaseRisk(sourcing);
   const hubPlan = computeAutoHubs(baseRisk);
@@ -3608,19 +3808,20 @@ function renderResultsTab(){
 
   const supply = activeSupply();
   const futureCount = S.supply.filter(s=>(s.status||'current')==='future').length;
+  const selectedFutureCount = S.supply.filter(s=>(s.status||'current')==='future' && supplySourceSelected(s)).length;
 
   return `
   ${calculationReadinessBanner()}
   ${futureCount>0?`
   <div class="card scenario-banner">
     <div style="font-size:12.5px">
-      <b>Scenario:</b> ${S.params.includeFuture
-        ? `Current + Future sources <span class="scenario-accent">(${supply.length} of ${S.supply.length} sources active, including ${futureCount} planned)</span>`
-        : `Current sources only <span class="scenario-accent">(${supply.length} of ${S.supply.length} sources active — ${futureCount} planned source(s) excluded)</span>`}
+      <b>Scenario:</b> ${selectedFutureCount
+        ? `Selected current + future sources <span class="scenario-accent">(${supply.length} of ${S.supply.length} sources active, including ${selectedFutureCount} of ${futureCount} planned)</span>`
+        : `Selected current sources only <span class="scenario-accent">(${supply.length} of ${S.supply.length} sources active — ${futureCount} planned source(s) excluded)</span>`}
     </div>
     <label class="scenario-accent" style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
-      <input type="checkbox" id="chkIncludeFutureQuick" ${S.params.includeFuture?'checked':''} style="width:15px;height:15px;cursor:pointer">
-      Include future sources
+      <input type="checkbox" id="chkIncludeFutureQuick" ${futureCount>0&&selectedFutureCount===futureCount?'checked':''} style="width:15px;height:15px;cursor:pointer">
+      Select all future sources
     </label>
   </div>`:''}
   <div class="kpirow">
@@ -3641,7 +3842,7 @@ function renderResultsTab(){
 
   <div class="card">
     <div class="flexbetween">
-      <div><h2 style="margin-bottom:0">Network Map</h2><p class="desc">Sourcing assignments and recommended resiliency staging hub locations</p></div>
+      <div><h2 style="margin-bottom:0">Network Map</h2><p class="desc">Click the map to expand it, then zoom or drag to explore locations</p></div>
       <div style="display:flex;gap:8px;align-items:center">
         <select id="exportThemeSelect" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11.5px;background:var(--input-bg);color:var(--text)">
           <option value="light" ${THEME!=='dark'?'selected':''}>☀ Light export</option>
@@ -3656,8 +3857,14 @@ function renderResultsTab(){
       ${hydrogenDataBadge()}
       ${publicHydrogenStatus==='error'?'<button class="btn btn-small btn-outline" id="btnRetryHydrogenData">Retry public H₂ data</button>':''}
     </div>
-    <div class="mapwrap" style="max-width:1160px;margin:0 auto">
+    <div class="mapwrap" id="networkMapWrap" style="max-width:1160px;margin:0 auto">
       <svg id="mapsvg" viewBox="0 0 ${PROJ.VBW} ${PROJ.VBH}" style="width:100%;height:auto;display:block;background:var(--map-bg)"></svg>
+      <div class="map-controls">
+        <button class="btn btn-small btn-outline" id="btnMapZoomOut" title="Zoom out">−</button>
+        <button class="btn btn-small btn-outline" id="btnMapZoomIn" title="Zoom in">+</button>
+        <button class="btn btn-small btn-outline" id="btnMapReset" title="Reset map view">Reset</button>
+        <button class="btn btn-small btn-primary" id="btnExpandMap" title="Expand map">⛶ Expand</button>
+      </div>
       <div class="maplegend">
         <div class="item"><span class="swatch" style="background:#C81E33"></span>High risk node</div>
         <div class="item"><span class="swatch" style="background:#B57500"></span>Medium risk node</div>
@@ -3774,7 +3981,7 @@ function renderResultsTab(){
     <p class="desc">Least-landed-cost assignment of supply sources to demand nodes, respecting source capacity. Trailers are always dispatched full, so daily volume is rounded up to whole trailer loads — cost reflects that.</p>
     <table><thead><tr><th>Demand Node</th><th>Assigned Source</th><th>Distance (mi)</th><th>Travel Time</th><th>Volume (${S.params.unit}/day)</th><th>Trailers/day</th><th>Landed Cost ($/${S.params.unit})</th><th>Daily Cost</th></tr></thead>
     <tbody>
-    ${S.demand.map(n=>{
+    ${activeDemand().map(n=>{
       const ns = sourcing.nodeSummary[n.id];
       if(ns.flows.length===0) return `<tr><td><b>${esc(n.name)}</b></td><td colspan="7" style="color:var(--red)">No supply available</td></tr>`;
       return ns.flows.map((f,i)=>{
@@ -3820,7 +4027,7 @@ function renderResultsTab(){
     <p class="desc">Nodes are flagged <b>High</b> only for an actual plan failure — neither the hub nor a direct supply source can reach it within target, or there's an unmet-demand shortfall — not by rank against other nodes. If a node's hub alone would put it at High risk but its supply source can reach it directly within target, the source route is used instead. A well-covered network can show zero High-risk nodes.</p>
     <table><thead><tr><th>Demand Node</th><th>Consumption</th><th>Serviced Via</th><th>Distance / Time</th><th>Within ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h Target</th><th>Primary Source</th><th>Risk</th></tr></thead>
     <tbody>
-    ${[...S.demand].sort((a,b)=>{
+    ${[...activeDemand()].sort((a,b)=>{
       const ra=risk[a.id], rb=risk[b.id];
       const rank = {High:2, Med:1, Low:0};
       if(rank[rb.tier]!==rank[ra.tier]) return rank[rb.tier]-rank[ra.tier];
@@ -3856,6 +4063,7 @@ function renderResultsTab(){
 
 /* ===================== RENDER: SCENARIO PLANNING TAB ===================== */
 let lastScenario = null;
+let lastMultiComparison = null;
 function renderScenarioTab(){
   if(PORTAL_MODE && (S.demand.length===0 || S.supply.length===0)){
     return `
@@ -3871,13 +4079,100 @@ function renderScenarioTab(){
   if(!PORTAL_MODE && (S.demand.length===0 || S.supply.length===0)){
     return `<div class="card"><div class="empty">Add at least one demand node and one supply source first — Scenario Planning runs against your current network.</div></div>`;
   }
+  const resiliency=PORTAL_MODE?true:S.scenarioResiliency!==false;
   const sources = activeSupply();
   const selectedSourceIds = new Set((S.scenarioSourceIds||[]).filter(id=>sources.some(s=>s.id===id)));
-  const selectedNodeIds = new Set((S.scenarioNodeIds||[]).filter(id=>S.demand.some(n=>n.id===id)));
+  const displayedSourceIds=resiliency?selectedSourceIds:new Set([...selectedSourceIds].slice(0,1));
+  const demand=activeDemand();
+  const selectedNodeIds = new Set((S.scenarioNodeIds||[]).filter(id=>demand.some(n=>n.id===id)));
+  const multiSourceIds = new Set((S.multiCompareSourceIds||[]).filter(id=>sources.some(s=>s.id===id)));
+  const multiNodeIds = new Set((S.multiCompareNodeIds||[]).filter(id=>demand.some(n=>n.id===id)));
+  if(lastMultiComparison){
+    lastMultiComparison=computeMultiSourceComparison(
+      Array.from(multiSourceIds),
+      Array.from(multiNodeIds),
+      Number(S.multiCompareDays)||1
+    );
+  }
+
+  function scenarioCostBlocks(summary,mode){
+    if(!summary.hasImpact) return '';
+    const legsHtml=summary.legs.map(l=>`
+      <div style="padding:3px 0;border-bottom:1px solid var(--border)">
+        <b>${esc(l.kind)}</b>: ${esc(l.from)} → ${esc(l.to)}<br>
+        <span style="color:var(--muted)">${fmt(l.distance,1)} mi × ${l.trips} trip${l.trips===1?'':'s'} = ${fmt(l.miles,1)} mi</span>
+      </div>`).join('');
+    const moleculeHtml=summary.molecules.map(m=>`
+      <div style="padding:3px 0;border-bottom:1px solid var(--border)">
+        <b>${esc(m.node)}</b> from ${esc(m.source)}<br>
+        <span style="color:var(--muted)">${fmt(m.volume,1)} ${S.params.unit} × ${money(m.unitCost,2)}/${S.params.unit} = ${money(m.cost,0)}</span>
+      </div>`).join('');
+    return `
+    <div class="kpirow">
+      <div class="kpi">
+        <div class="val">${fmt(summary.miles,0)} mi</div>
+        <div class="lbl">Transportation Miles</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:4px">${mode==='direct'?'Loaded delivery and empty return legs':'Initial emergency response legs to impacted facilities'}</div>
+      </div>
+      <div class="kpi">
+        <div class="val">${money(summary.transportationCost,0)}</div>
+        <div class="lbl">Transportation Costs</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:4px">${fmt(summary.miles,1)} mi × ${money(S.params.costPerMile,2)}/mile</div>
+        <details class="params-help" style="margin-top:7px;text-align:left">
+          <summary>View mileage legs</summary>
+          <div>${legsHtml}</div>
+        </details>
+      </div>
+      <div class="kpi">
+        <div class="val">${money(summary.moleculeCost,0)}</div>
+        <div class="lbl">Total Cost of Molecule Procured</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:4px">Required consumption volume × supplying source molecule price</div>
+        <details class="params-help" style="margin-top:7px;text-align:left">
+          <summary>View molecule basis</summary>
+          <div>${moleculeHtml||'No priced molecule source is available.'}</div>
+        </details>
+      </div>
+      <div class="kpi">
+        <div class="val">${money(summary.allInCost,0)}</div>
+        <div class="lbl">All-In Cost</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:4px">${money(summary.moleculeCost,0)} molecule + ${money(summary.transportationCost,0)} transportation</div>
+      </div>
+    </div>`;
+  }
 
   let resultsHtml = '';
-  if(lastScenario){
+  if(lastScenario && lastScenario.mode==='direct'){
+    const sc=lastScenario;
+    const summary=scenarioCostSummary(sc);
+    resultsHtml=`
+      ${scenarioCostBlocks(summary,'direct')}
+      <div class="card" style="border-color:${sc.sourceCapacitySufficient?'var(--status-ok-border)':'var(--status-warn-border)'}">
+        <b style="color:${sc.sourceCapacitySufficient?'var(--status-ok-accent)':'var(--status-warn-accent)'}">${sc.sourceCapacitySufficient?'✓':'⚠'} Direct service from ${esc(sc.source.name)}</b>
+        <span style="color:var(--muted)"> — ${fmt(sc.dailyDemand)} ${S.params.unit}/day selected versus ${fmt(sc.source.capacity)} ${S.params.unit}/day source capacity.</span>
+      </div>
+      <div class="card">
+        <h2>Direct Source-to-Node Cost Comparison</h2>
+        <p class="desc">Resiliency is off. The selected source serves each selected node directly for ${fmt(sc.serviceDays,1)} day(s) at its stored consumption rate. Change the source and run again to compare.</p>
+        <table><thead><tr><th>Demand Node</th><th>Consumption</th><th>Service Volume</th><th>Distance</th><th>Travel Time</th><th>Trailer Trips</th><th>Transportation Miles</th><th>Molecule Cost</th><th>Transportation Cost</th><th>All-In Cost</th><th>All-In / ${S.params.unit}</th></tr></thead>
+        <tbody>${sc.results.map(r=>`<tr>
+          <td><b>${esc(r.node.name)}</b></td>
+          <td>${fmt(r.node.rate)} ${S.params.unit}/day</td>
+          <td>${fmt(r.volume)} ${S.params.unit}</td>
+          <td>${fmt(r.lane.dist,1)} mi one way</td>
+          <td>${fmtHours(r.lane.hours)} one way</td>
+          <td>${r.trailerPlan.count}</td>
+          <td>${fmt(r.transportationMiles,1)} mi</td>
+          <td>${money(r.moleculeCost,0)}</td>
+          <td>${money(r.transportationCost,0)}</td>
+          <td><b>${money(r.allInCost,0)}</b></td>
+          <td>${r.volume>0?money(r.allInCost/r.volume,2):'—'}</td>
+        </tr>`).join('')}</tbody></table>
+        <div class="note">Each trailer trip includes a loaded ${esc(sc.source.name)} → demand-node leg and an empty return leg over the same distance. Molecule cost uses the selected source's ${money(sc.source.cost,2)}/${S.params.unit} price and the node's stored consumption rate × service days.</div>
+      </div>`;
+  }
+  if(lastScenario && lastScenario.mode!=='direct'){
     const sc = lastScenario;
+    const scenarioTransport = scenarioCostSummary(sc);
     const totalAffectedDemand = sc.affected.reduce((a,n)=>a+n.rate,0);
     const anyBufferShortfall = sc.hubRollups.some(g=>!g.bufferSufficient);
     const anyShuttleShortfall = sc.hubRollups.some(g=>!g.allShuttlesSufficient);
@@ -3888,6 +4183,7 @@ function renderScenarioTab(){
     ].filter(Boolean).join(' and ');
 
     resultsHtml = `
+    ${scenarioCostBlocks(scenarioTransport,'resiliency')}
     <div class="card" style="border-color:${sc.affected.length===0?'#CDE9DC':(overallOk?'#CDE9DC':'#F3C6C6')};background:${sc.affected.length===0?'#F3FBF7':(overallOk?'#F3FBF7':'#FEF6F6')}">
       ${sc.affected.length===0
         ? `<b style="color:#177A4C">✓ No exposure.</b> With ${disruptionLabel} disrupted, no other demand node depends on them for primary sourcing — going down for ${sc.outageDays} day(s) wouldn't cascade to anyone else in the current plan.`
@@ -3949,40 +4245,140 @@ function renderScenarioTab(){
     `;
   }
 
-  function checklist(id, items, selectedSet, labelFn){
+  function checklist(id, items, selectedSet, labelFn, inputType='checkbox'){
     if(items.length===0) return '<div class="empty" style="padding:14px">None available.</div>';
     return `
-    <div class="toolbar" style="margin-bottom:6px">
+    ${inputType==='checkbox'?`<div class="toolbar" style="margin-bottom:6px">
       <button type="button" class="btn btn-small btn-outline" data-checkall="${id}">Select All</button>
       <button type="button" class="btn btn-small btn-outline" data-clearall="${id}">Clear</button>
-    </div>
+    </div>`:''}
     <div id="${id}" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
       ${items.map(it=>`
         <label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px;cursor:pointer">
-          <input type="checkbox" class="${id}-item" value="${it.id}" ${selectedSet.has(it.id)?'checked':''}>
+          <input type="${inputType}" ${inputType==='radio'?`name="${id}-choice"`:''} class="${id}-item" value="${it.id}" ${selectedSet.has(it.id)?'checked':''}>
           ${labelFn(it)}
         </label>`).join('')}
     </div>`;
+  }
+
+  let multiComparisonHtml='';
+  if(!PORTAL_MODE&&!resiliency){
+    const comparison=lastMultiComparison;
+    const optimalHubSummary=comparison?comparison.sources.map(source=>{
+      const aligned=comparison.results.filter(r=>r.isOptimal&&r.source.id===source.id);
+      return {
+        source,
+        count:aligned.length,
+        unitPrice:aligned.length?aligned[0].unitPrice:(Number(source.cost)||0),
+        dailyDemand:aligned.reduce((sum,r)=>sum+r.node.rate,0),
+        serviceCost:aligned.reduce((sum,r)=>sum+r.allInCost,0),
+      };
+    }).filter(h=>h.count>0).sort((a,b)=>b.count-a.count||a.serviceCost-b.serviceCost):[];
+    const optimalHubTiles=optimalHubSummary.length?`
+      <div class="card" style="padding-bottom:2px">
+        <h2>Optimal Supply Hub Alignment</h2>
+        <p class="desc">DCs are assigned to the lowest-cost feasible supply hub from the selected comparison.</p>
+        <div class="optimal-hub-tiles">
+          ${optimalHubSummary.map(h=>`
+            <div class="optimal-hub-tile" title="${esc(h.source.name)}">
+              <div class="hub-name">${esc(h.source.name)}</div>
+              <div class="dc-count">${h.count} DC${h.count===1?'':'s'}</div>
+              <div class="hub-detail">${money(h.unitPrice,2)}/${S.params.unit} · ${fmt(h.dailyDemand)} ${S.params.unit}/day aligned · ${money(h.serviceCost,0)} combined all-in cost</div>
+            </div>`).join('')}
+        </div>
+      </div>`:'';
+    const comparisonResults=comparison?`
+      <div class="note" style="margin:0 0 10px">
+        Green outlined rows are the lowest feasible all-in source option for each selected site. A source must have enough daily capacity to meet that site's stored consumption rate to qualify.
+      </div>
+      <table><thead><tr><th>Demand Site</th><th>Supply Source</th><th>Service Volume</th><th>Distance</th><th>Travel Time</th><th>Trailer Trips</th><th>Transportation Miles</th><th>Molecule Cost</th><th>Transportation Cost</th><th>All-In Cost</th><th>All-In / ${S.params.unit}</th><th>Result</th></tr></thead>
+      <tbody>${comparison.results.map(r=>`<tr class="${r.isOptimal?'multi-optimal-row':''}">
+        <td><b>${esc(r.node.name)}</b></td>
+        <td><b>${esc(r.source.name)}</b><br><span style="color:var(--muted)">${money(r.unitPrice,2)}/${S.params.unit} · ${fmt(r.source.capacity)} ${S.params.unit}/day capacity</span></td>
+        <td>${fmt(r.volume)} ${S.params.unit}</td>
+        <td>${fmt(r.lane.dist,1)} mi one way</td>
+        <td>${fmtHours(r.lane.hours)} one way</td>
+        <td>${r.trailerPlan.count}</td>
+        <td>${fmt(r.transportationMiles,1)} mi</td>
+        <td>${money(r.moleculeCost,0)}</td>
+        <td>${money(r.transportationCost,0)}</td>
+        <td><b>${money(r.allInCost,0)}</b></td>
+        <td>${r.volume>0?money(r.allInCost/r.volume,2):'—'}</td>
+        <td>${r.isOptimal?'<span class="tag tag-low">✓ Optimal for site</span>':r.sourceCapacitySufficient?'<span style="color:var(--muted)">Compared</span>':'<span class="tag tag-high">Insufficient capacity</span>'}</td>
+      </tr>`).join('')}</tbody></table>
+      <div class="note">Every option includes the selected site's consumption for ${fmt(comparison.serviceDays,1)} day(s), loaded delivery mileage, the same-distance empty return, and the selected source's molecule price.</div>`
+      : '<div class="empty" style="padding:22px">Choose multiple sources and sites, then calculate to identify the optimal source for each site.</div>';
+    multiComparisonHtml=`
+      ${optimalHubTiles}
+      <div class="card">
+        <h2>Multi-Source / Multi-Site Optimal Cost Comparison</h2>
+        <p class="desc">Select any combination of supply sources and demand sites. The app prices every pairing and highlights the lowest feasible all-in option for each site with a green rectangle.</p>
+        <div class="row2">
+          <div>
+            <div class="subhead" style="margin-top:4px">Supply Sources</div>
+            <div class="toolbar" style="margin-bottom:6px">
+              <button type="button" class="btn btn-small btn-outline" data-checkall="multiCompareSourceList">Select All</button>
+              <button type="button" class="btn btn-small btn-outline" data-clearall="multiCompareSourceList">Clear</button>
+              <button type="button" class="btn btn-small btn-outline" id="btnResetMultiPrices">Reset Prices</button>
+            </div>
+            <div id="multiCompareSourceList" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+              ${sources.map(source=>{
+                const override=S.multiComparePrices&&S.multiComparePrices[source.id];
+                const comparisonPrice=Number.isFinite(Number(override))&&Number(override)>=0?Number(override):(Number(source.cost)||0);
+                return `
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 0">
+                  <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;min-width:0;flex:1">
+                    <input type="checkbox" class="multiCompareSourceList-item" value="${source.id}" ${multiSourceIds.has(source.id)?'checked':''}>
+                    <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(source.name)}</span>
+                  </label>
+                  <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);white-space:nowrap">
+                    $<input class="multiComparePriceField" data-source-id="${source.id}" type="number" min="0" step="0.01" value="${comparisonPrice.toFixed(2)}" aria-label="${esc(source.name)} comparison price per ${esc(S.params.unit)}" style="width:82px;padding:5px 7px;border:1px solid var(--border);border-radius:6px;color:var(--text);background:var(--input-bg)">
+                    /${esc(S.params.unit)}
+                  </label>
+                </div>`;
+              }).join('')}
+            </div>
+            <div class="note" style="margin-top:7px">These are comparison-only prices. Change a value, then press Enter or leave the field to refresh existing results. Your Supply Sources master prices are not overwritten.</div>
+          </div>
+          <div>
+            <div class="subhead" style="margin-top:4px">Demand Sites</div>
+            ${checklist('multiCompareNodeList',demand,multiNodeIds,n=>`${esc(n.name)} · ${fmt(n.rate)} ${S.params.unit}/day`)}
+          </div>
+        </div>
+        <div style="display:flex;align-items:end;gap:10px;margin-top:12px;flex-wrap:wrap">
+          <div class="field" style="width:180px;margin:0"><label>Service Period (days)</label><input id="fMultiCompareDays" type="number" min="0.5" step="0.5" value="${S.multiCompareDays||1}"></div>
+          <button class="btn btn-primary" id="btnRunMultiComparison">Find Optimal Options</button>
+        </div>
+        <div style="margin-top:16px">${comparisonResults}</div>
+      </div>`;
   }
 
   return `
   <div class="grid2">
     <div>
       <div class="card">
-        <h2>${PORTAL_MODE?'Report a Site Outage':'Simulate Simultaneous Outages'}</h2>
+        <div class="flexbetween">
+          <h2>${PORTAL_MODE?'Report a Site Outage':resiliency?'Simulate Simultaneous Outages':'Direct Service Cost Comparison'}</h2>
+          ${!PORTAL_MODE?`<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;color:${resiliency?'var(--green)':'var(--muted)'};cursor:pointer">
+            <input type="checkbox" id="chkScenarioResiliency" ${resiliency?'checked':''} style="width:17px;height:17px;cursor:pointer">
+            Resiliency
+          </label>`:''}
+        </div>
         <p class="desc">${PORTAL_MODE
           ? 'Check any number of your sites to report as down — no limit on how many. See how fast a response hub could reach them, and whether resupply can sustain them for the outage duration.'
-          : 'Check any number of supply sources and/or demand nodes to disrupt at once — no limit on how many. See which nodes would be exposed, how fast their covering hub could respond, and whether resupply can sustain them for the outage duration.'}</p>
+          : resiliency
+            ? 'Resiliency is on. Check supply sources and/or demand nodes to disrupt, then evaluate the staged response.'
+            : 'Resiliency is off. Choose one supply source and the demand node(s) it will serve directly. Run again with another source to compare all-in service cost.'}</p>
         ${!PORTAL_MODE?`
-        <div class="subhead">Supply Sources to Simulate Down</div>
-        ${checklist('scenarioSourceList', sources, selectedSourceIds, s=>`${esc(s.name)}${(s.status||'current')==='future'?' <span style="color:#AAB2BD">(future)</span>':''}`)}`:''}
-        <div class="subhead">${PORTAL_MODE?'Your Sites Down':'Demand Nodes to Simulate Down'}</div>
-        ${checklist('scenarioNodeList', S.demand, selectedNodeIds, n=>`${esc(n.name)}`)}
-        <div class="row2" style="margin-top:14px">
-          <div class="field"><label>Assumed Outage Duration (days)</label><input id="fScenarioDays" type="number" min="0.5" step="0.5" value="${S.scenarioDays||3}"></div>
-          <div class="field"><label>Trailer Fill/Turnaround Dwell (hours)</label><input id="fScenarioTurnaround" type="number" min="0" step="0.5" value="${S.scenarioTurnaround!==undefined?S.scenarioTurnaround:2}"></div>
+        <div class="subhead">${resiliency?'Supply Sources to Simulate Down':'Supply Source to Serve the Selected Nodes'}</div>
+        ${checklist('scenarioSourceList', sources, displayedSourceIds, s=>`${esc(s.name)} · ${money(s.cost,2)}/${S.params.unit}${(s.status||'current')==='future'?' <span style="color:#AAB2BD">(future)</span>':''}`,resiliency?'checkbox':'radio')}`:''}
+        <div class="subhead">${PORTAL_MODE?'Your Sites Down':resiliency?'Demand Nodes to Simulate Down':'Demand Nodes to Serve Directly'}</div>
+        ${checklist('scenarioNodeList', demand, selectedNodeIds, n=>`${esc(n.name)} · ${fmt(n.rate)} ${S.params.unit}/day`)}
+        <div class="${resiliency?'row2':''}" style="margin-top:14px">
+          <div class="field"><label>${resiliency?'Assumed Outage Duration':'Service Period'} (days)</label><input id="fScenarioDays" type="number" min="0.5" step="0.5" value="${S.scenarioDays||3}"></div>
+          ${resiliency?`<div class="field"><label>Trailer Fill/Turnaround Dwell (hours)</label><input id="fScenarioTurnaround" type="number" min="0" step="0.5" value="${S.scenarioTurnaround!==undefined?S.scenarioTurnaround:2}"></div>`:''}
         </div>
-        <button class="btn btn-primary" id="btnRunScenario">Run Scenario</button>
+        <button class="btn btn-primary" id="btnRunScenario">${resiliency?'Run Resiliency Scenario':'Calculate Direct Service Cost'}</button>
         ${PORTAL_MODE?`<div class="note" style="margin-top:10px">Loaded ${S.demand.length} site(s) from your scenario file. <a href="#" id="lnkLoadDifferentScenario" style="color:var(--blue)">Load a different scenario file</a></div>`:''}
       </div>
       <div class="card">
@@ -3992,10 +4388,17 @@ function renderScenarioTab(){
           : `<p class="desc">After running a scenario, “Send Outage Notification” delivers the report automatically to the operations recipient configured securely in Netlify.</p>
              <div class="note" style="margin-top:0">The destination address is controlled by the server-side <b>OUTAGE_NOTIFY_TO</b> environment variable and is never exposed in this page.</div>`}
       </div>
-      <div class="note" style="margin-top:0">This does not touch your live Optimization Results — sourcing, hubs, and risk there are unaffected by running a scenario here. Hub locations and trailer counts stay fixed at what Optimization Results computed; this only asks how that standing plan performs under the disruptions you pick.</div>
+      <div class="note" style="margin-top:0">${resiliency
+        ? 'This does not touch your live Optimization Results. Hub locations and trailer counts stay fixed; this asks how that standing plan performs under the disruptions selected.'
+        : 'Direct mode bypasses staged hubs and resiliency assets. It prices the chosen source serving each selected node at its stored consumption rate, including molecule cost, loaded delivery mileage, and empty return mileage.'}</div>
     </div>
     <div>
-      ${resultsHtml || '<div class="card"><div class="empty">Check at least one source or demand node, then click "Run Scenario" to see the response plan.</div></div>'}
+      ${!PORTAL_MODE&&!resiliency?`
+        <div class="toolbar" style="justify-content:flex-end;margin:0 0 12px">
+          <button class="btn btn-outline" id="btnClearScenarioResults" ${!lastScenario&&!lastMultiComparison?'disabled style="opacity:.55;cursor:not-allowed"':''}>Clear Results</button>
+        </div>`:''}
+      ${resultsHtml || (resiliency?'<div class="card"><div class="empty">Check at least one source or demand node, then click "Run Scenario" to see the response plan.</div></div>':'')}
+      ${multiComparisonHtml}
     </div>
   </div>`;
 }
@@ -4006,8 +4409,8 @@ function renderAssetPlacementTab(){
   const editingRaw = S.assets.find(a=>a.id===S.assetForm);
   const editing = editingRaw ? normalizedAssetGroup(editingRaw) : null;
 
-  if(S.demand.length===0){
-    return `<div class="card"><div class="empty">Add at least one demand node first — Asset Placement runs against your current network.</div></div>`;
+  if(activeDemand().length===0){
+    return `<div class="card"><div class="empty">Select at least one demand node first — Asset Placement runs against the selected network.</div></div>`;
   }
 
   const result = S.assets.length>0 ? computeAssetPlacement() : null;
@@ -4128,7 +4531,7 @@ function renderAssetPlacementTab(){
 
 let lastAssetPlacementComputed=null;
 function renderAssetPlacementRecommendationTab(){
-  if(S.demand.length===0) return `<div class="card"><div class="empty">Add demand nodes before generating an asset placement recommendation.</div></div>`;
+  if(activeDemand().length===0) return `<div class="card"><div class="empty">Select demand nodes before generating an asset placement recommendation.</div></div>`;
   if(S.assets.length===0) return `<div class="card"><div class="empty">Add assets on the Asset Placement tab or drop an asset file into Input Parameters.</div></div>`;
   const result=computeAssetPlacement();
   lastAssetPlacementComputed=result;
@@ -4186,7 +4589,7 @@ function drawAssetRecommendationMap(){
     ...lastAssetPlacementComputed.storage.assets.map(a=>({...a,kind:'storage'})),
   ];
   all.forEach(a=>{const [x,y]=svgXY(a.lat,a.lon);const color=a.kind==='compression'?'#7A5195':'#F2A900';html+=`<circle cx="${x}" cy="${y}" r="${radius}" fill="${color}" fill-opacity=".045" stroke="${color}" stroke-width="1.2" stroke-dasharray="5,3"/>`;});
-  S.demand.forEach(n=>{const [x,y]=svgXY(n.lat,n.lon);html+=`<circle cx="${x}" cy="${y}" r="5" fill="#1E8A5F" stroke="#fff" stroke-width="1.2"/>`;});
+  activeDemand().forEach(n=>{const [x,y]=svgXY(n.lat,n.lon);html+=`<circle cx="${x}" cy="${y}" r="5" fill="#1E8A5F" stroke="#fff" stroke-width="1.2"/>`;});
   all.forEach(a=>{
     const [x,y]=svgXY(a.lat,a.lon);
     html+=a.kind==='compression'
@@ -4467,6 +4870,112 @@ function renderPricingTab(){
 /* PRICING_BLOCK_END */
 
 /* ===================== MAP DRAWING ===================== */
+let networkMapViewBox = null;
+let networkMapExpanded = false;
+
+function attachNetworkMapInteractions(){
+  const wrap=document.getElementById('networkMapWrap');
+  const svg=document.getElementById('mapsvg');
+  if(!wrap||!svg) return;
+  const full={x:0,y:0,w:PROJ.VBW,h:PROJ.VBH};
+  if(!networkMapViewBox) networkMapViewBox={...full};
+
+  const applyViewBox=()=>{
+    const v=networkMapViewBox;
+    svg.setAttribute('viewBox',`${v.x} ${v.y} ${v.w} ${v.h}`);
+  };
+  const clampViewBox=()=>{
+    const v=networkMapViewBox;
+    v.w=Math.max(full.w*0.06,Math.min(full.w,v.w));
+    v.h=v.w*(full.h/full.w);
+    v.x=Math.max(0,Math.min(full.w-v.w,v.x));
+    v.y=Math.max(0,Math.min(full.h-v.h,v.y));
+  };
+  const zoomAt=(factor,clientX,clientY)=>{
+    const v=networkMapViewBox;
+    const rect=svg.getBoundingClientRect();
+    const px=clientX==null?v.x+v.w/2:v.x+((clientX-rect.left)/rect.width)*v.w;
+    const py=clientY==null?v.y+v.h/2:v.y+((clientY-rect.top)/rect.height)*v.h;
+    const nextW=v.w*factor;
+    const nextH=v.h*factor;
+    const ratioX=(px-v.x)/v.w;
+    const ratioY=(py-v.y)/v.h;
+    v.x=px-ratioX*nextW;
+    v.y=py-ratioY*nextH;
+    v.w=nextW;
+    v.h=nextH;
+    clampViewBox();
+    applyViewBox();
+  };
+  const setExpanded=expanded=>{
+    networkMapExpanded=expanded;
+    wrap.classList.toggle('map-expanded',expanded);
+    document.body.classList.toggle('map-modal-open',expanded);
+    const button=document.getElementById('btnExpandMap');
+    if(button){
+      button.textContent=expanded?'✕ Close':'⛶ Expand';
+      button.title=expanded?'Close expanded map':'Expand map';
+    }
+  };
+
+  applyViewBox();
+  setExpanded(networkMapExpanded);
+  document.onkeydown=e=>{
+    if(e.key==='Escape'&&networkMapExpanded) setExpanded(false);
+  };
+
+  const expandButton=document.getElementById('btnExpandMap');
+  if(expandButton) expandButton.addEventListener('click',e=>{e.stopPropagation();setExpanded(!networkMapExpanded);});
+  const zoomIn=document.getElementById('btnMapZoomIn');
+  if(zoomIn) zoomIn.addEventListener('click',e=>{e.stopPropagation();zoomAt(0.72);});
+  const zoomOut=document.getElementById('btnMapZoomOut');
+  if(zoomOut) zoomOut.addEventListener('click',e=>{e.stopPropagation();zoomAt(1/0.72);});
+  const reset=document.getElementById('btnMapReset');
+  if(reset) reset.addEventListener('click',e=>{
+    e.stopPropagation();
+    networkMapViewBox={...full};
+    applyViewBox();
+  });
+
+  wrap.addEventListener('click',e=>{
+    if(!networkMapExpanded && !e.target.closest('.map-controls')) setExpanded(true);
+  });
+  svg.addEventListener('wheel',e=>{
+    if(!networkMapExpanded) return;
+    e.preventDefault();
+    zoomAt(e.deltaY<0?0.84:1/0.84,e.clientX,e.clientY);
+  },{passive:false});
+  svg.addEventListener('dblclick',e=>{
+    if(!networkMapExpanded) return;
+    e.preventDefault();
+    zoomAt(0.62,e.clientX,e.clientY);
+  });
+
+  let drag=null;
+  svg.addEventListener('pointerdown',e=>{
+    if(!networkMapExpanded || e.button!==0) return;
+    drag={x:e.clientX,y:e.clientY,startX:networkMapViewBox.x,startY:networkMapViewBox.y};
+    svg.classList.add('map-panning');
+    svg.setPointerCapture(e.pointerId);
+  });
+  svg.addEventListener('pointermove',e=>{
+    if(!drag) return;
+    const rect=svg.getBoundingClientRect();
+    networkMapViewBox.x=drag.startX-(e.clientX-drag.x)*networkMapViewBox.w/rect.width;
+    networkMapViewBox.y=drag.startY-(e.clientY-drag.y)*networkMapViewBox.h/rect.height;
+    clampViewBox();
+    applyViewBox();
+  });
+  const finishDrag=e=>{
+    if(!drag) return;
+    drag=null;
+    svg.classList.remove('map-panning');
+    if(svg.hasPointerCapture(e.pointerId)) svg.releasePointerCapture(e.pointerId);
+  };
+  svg.addEventListener('pointerup',finishDrag);
+  svg.addEventListener('pointercancel',finishDrag);
+}
+
 function drawMap(){
   const svg = document.getElementById('mapsvg');
   if(!svg || !lastComputed) return;
@@ -4539,7 +5048,7 @@ function drawMap(){
   S.supply.forEach(s=>{
     const [x,y]=svgXY(s.lat,s.lon);
     const isFuture = (s.status||'current')==='future';
-    const isActive = !isFuture || S.params.includeFuture;
+    const isActive = supplySourceSelected(s);
     const fill = isFuture ? (isActive ? '#5B9BD9' : mapColors.fill) : '#0071CE';
     const dash = isFuture ? ' stroke-dasharray="2,1.5"' : '';
     const opacity = isActive ? 1 : 0.55;
@@ -4547,9 +5056,9 @@ function drawMap(){
   });
 
   // demand markers
-  const maxRate = Math.max(1,...S.demand.map(n=>n.rate));
+  const maxRate = Math.max(1,...activeDemand().map(n=>n.rate));
   const riskColor = {High:'#C81E33', Med:'#B57500', Low:'#177A4C'};
-  S.demand.forEach(n=>{
+  activeDemand().forEach(n=>{
     const [x,y]=svgXY(n.lat,n.lon);
     const r = 4 + 8*Math.sqrt(n.rate/maxRate);
     const tier = risk[n.id].tier;
@@ -4600,11 +5109,11 @@ function drawMap(){
     el.addEventListener('mousemove', evt=>{
       const s = S.supply.find(x=>x.id===el.dataset.id);
       const isFuture = (s.status||'current')==='future';
-      const isActive = !isFuture || S.params.includeFuture;
+      const isActive = supplySourceSelected(s);
       const used = sourcing.sourceUsage[s.id]||0;
       const statusLine = isFuture
-        ? (isActive ? '<span style="color:#8FC1F0">Future — included in this run</span>' : '<span style="color:#AAB2BD">Future — NOT included (toggle on in Supply Sources tab)</span>')
-        : '<span class="mut">Current — operational</span>';
+        ? (isActive ? '<span style="color:#8FC1F0">Future — selected for this run</span>' : '<span style="color:#AAB2BD">Future — not selected for this run</span>')
+        : (isActive?'<span class="mut">Current — selected for this run</span>':'<span style="color:#AAB2BD">Current — not selected for this run</span>');
       showTooltip(evt, `<b>${esc(s.name)}</b><br><span class="mut">${esc(s.city||'')}</span><br>
         ${statusLine}<br>
         Capacity: ${fmt(s.capacity)} ${S.params.unit}/day<br>
@@ -4770,7 +5279,7 @@ function buildPresentationSVG(exportTheme){
   S.supply.forEach(s=>{
     const [x,y] = toMap(s.lat,s.lon);
     const isFuture = (s.status||'current')==='future';
-    const isActive = !isFuture || S.params.includeFuture;
+    const isActive = supplySourceSelected(s);
     const fill = isFuture ? (isActive ? '#5B9BD9' : PAL.MAPFILL) : '#0071CE';
     const dash = isFuture ? ' stroke-dasharray="3,2"' : '';
     const opacity = isActive ? 1 : 0.55;
@@ -4778,8 +5287,8 @@ function buildPresentationSVG(exportTheme){
   });
 
   // demand markers
-  const maxRate = Math.max(1,...S.demand.map(n=>n.rate));
-  S.demand.forEach(n=>{
+  const maxRate = Math.max(1,...activeDemand().map(n=>n.rate));
+  activeDemand().forEach(n=>{
     const [x,y] = toMap(n.lat,n.lon);
     const r = 5.5 + 11*Math.sqrt(n.rate/maxRate);
     const tier = risk[n.id].tier;
@@ -4809,8 +5318,9 @@ function buildPresentationSVG(exportTheme){
   });
   if(hasFuture){
     const cx=sbX+26, cy=sy-4;
-    svg += `<rect x="${cx-6}" y="${cy-6}" width="12" height="12" fill="${S.params.includeFuture?'#5B9BD9':PAL.MAPFILL}" stroke="#0071CE" stroke-width="1.3" stroke-dasharray="2,1.5" opacity="${S.params.includeFuture?1:0.55}"/>`;
-    svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Future supply source ${S.params.includeFuture?'(included)':'(excluded)'}</text>`;
+    const selectedFuture=S.supply.filter(s=>(s.status||'current')==='future'&&supplySourceSelected(s)).length;
+    svg += `<rect x="${cx-6}" y="${cy-6}" width="12" height="12" fill="${selectedFuture?'#5B9BD9':PAL.MAPFILL}" stroke="#0071CE" stroke-width="1.3" stroke-dasharray="2,1.5" opacity="${selectedFuture?1:0.55}"/>`;
+    svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Future sources (${selectedFuture} selected)</text>`;
     sy += 26;
   }
   if(S.showTrailerRadius){
@@ -4834,14 +5344,15 @@ function buildPresentationSVG(exportTheme){
   sy += 28;
   const activeSupplyCount = activeSupply().length;
   const futureCount = S.supply.filter(s=>(s.status||'current')==='future').length;
+  const selectedFutureCount = S.supply.filter(s=>(s.status||'current')==='future'&&supplySourceSelected(s)).length;
   const summaryLines = [
-    ...(futureCount>0 ? [[`Scenario`, S.params.includeFuture?`Current + Future`:`Current only`]] : []),
+    ...(futureCount>0 ? [[`Scenario`, selectedFutureCount?`Selected current + future`:`Selected current only`]] : []),
     ...(futureCount>0 ? [[`Active sources`, `${activeSupplyCount} of ${S.supply.length}`]] : []),
     [`Total daily demand`, `${fmt(kpi.totalDemand)} ${S.params.unit}/day`],
     [`One-time staging cost`, `${money(kpi.totalStagingCost,0)}`],
     [`Avg landed cost`, `${money(kpi.avgCost)}/${S.params.unit}`],
     [`Trailer trips/day`, `${kpi.totalDailyTrips}`],
-    [`High-risk nodes`, `${kpi.highRisk} of ${S.demand.length}`],
+    [`High-risk nodes`, `${kpi.highRisk} of ${activeDemand().length}`],
     [`Staging hubs`, `${hubs.length}`],
     [`Staged trailers`, `${kpi.totalTrailers}`],
     [`Mobile HyCAS units`, `${(hycasUnits||[]).length}`],
@@ -4991,12 +5502,12 @@ function buildRiskPageSVG(exportTheme, pageNodes, pageNumber=1, totalPages=1){
     ];
   });
   const pageLabel=totalPages>1?` — Page ${pageNumber} of ${totalPages}`:'';
-  return buildTablePageSVG(exportTheme,'Risk Assessment',`${S.demand.length} demand node(s) · ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails${pageLabel}`,columns,rows);
+  return buildTablePageSVG(exportTheme,'Risk Assessment',`${activeDemand().length} demand node(s) · ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h guardrails${pageLabel}`,columns,rows);
 }
 
 function sourcingExportRows(){
   const rows=[];
-  S.demand.forEach(n=>{
+  activeDemand().forEach(n=>{
     const summary=lastComputed.sourcing.nodeSummary[n.id];
     if(!summary||!summary.flows.length){
       rows.push([n.name,'No supply available','—','—',`${fmt(n.rate)} ${S.params.unit}/day`,'—','—','—']);
@@ -5138,7 +5649,7 @@ async function exportPresentationMap(){
     for(let page=0;page<unitPageCount;page++){
       operationalPages.push(await svgToJpegBytes(buildHycasDetailPageSVG(exportTheme,units.slice(page*perPage,(page+1)*perPage),page+1,unitPageCount),bg));
     }
-    const riskNodes=[...S.demand].sort((a,b)=>{
+    const riskNodes=[...activeDemand()].sort((a,b)=>{
       const rank={High:2,Med:1,Low:0};
       return rank[lastComputed.risk[b.id].tier]-rank[lastComputed.risk[a.id].tier]||naturalCompare(a.name,b.name);
     });
@@ -5264,18 +5775,35 @@ function attachHandlers(){
     const lon = parseFloat(document.getElementById('fLon').value);
     const rate = parseFloat(document.getElementById('fRate').value);
     const safetyDays = parseFloat(document.getElementById('fSafety').value)||S.params.safetyDays;
+    const status = document.getElementById('fDemandStatus').value;
     if(!name||isNaN(lat)||isNaN(lon)||isNaN(rate)){ alert('Please fill in name, latitude, longitude, and consumption rate.'); return; }
     if(S.demandForm){
       const n = S.demand.find(x=>x.id===S.demandForm);
-      Object.assign(n,{name,city,lat,lon,rate,safetyDays});
+      Object.assign(n,{name,city,lat,lon,rate,safetyDays,status});
       S.demandForm=null;
     } else {
-      S.demand.push({id:uid(), name, city, lat, lon, rate, safetyDays});
+      S.demand.push({id:uid(), name, city, lat, lon, rate, safetyDays, status, enabled:true});
     }
     render();
   });
   const btnCancelDemand = document.getElementById('btnCancelDemand');
   if(btnCancelDemand) btnCancelDemand.addEventListener('click', ()=>{ S.demandForm=null; render(); });
+
+  document.querySelectorAll('.demand-group-check').forEach(el=>{
+    const selected=parseInt(el.dataset.selected||'0',10);
+    const total=parseInt(el.dataset.total||'0',10);
+    el.indeterminate=selected>0&&selected<total;
+    el.addEventListener('change',()=>{
+      const group=el.dataset.demandGroupToggle;
+      S.demand.filter(n=>((n.status||'current')==='future'?'future':'current')===group).forEach(n=>{n.enabled=el.checked;});
+      render();
+    });
+  });
+  document.querySelectorAll('.demand-node-check').forEach(el=>el.addEventListener('change',()=>{
+    const node=S.demand.find(n=>n.id===el.dataset.toggleDemand);
+    if(node) node.enabled=el.checked;
+    render();
+  }));
 
   document.querySelectorAll('[data-edit-demand]').forEach(b=>b.addEventListener('click', ()=>{ S.demandForm=b.dataset.editDemand; render(); }));
   document.querySelectorAll('[data-del-demand]').forEach(b=>b.addEventListener('click', ()=>{
@@ -5312,18 +5840,44 @@ function attachHandlers(){
       Object.assign(n,{name,city,lat,lon,capacity,cost,status,highPressureCapable,lowPressureCapable,isWmtTransfill});
       S.supplyForm=null;
     } else {
-      S.supply.push({id:uid(), name, city, lat, lon, capacity, cost, status, highPressureCapable, lowPressureCapable, isWmtTransfill});
+      S.supply.push({id:uid(), name, city, lat, lon, capacity, cost, status, highPressureCapable, lowPressureCapable, isWmtTransfill, enabled:true});
     }
     render();
   });
   const btnCancelSupply = document.getElementById('btnCancelSupply');
   if(btnCancelSupply) btnCancelSupply.addEventListener('click', ()=>{ S.supplyForm=null; render(); });
-  const chkIncludeFuture = document.getElementById('chkIncludeFuture');
-  if(chkIncludeFuture) chkIncludeFuture.addEventListener('change', (e)=>{ S.params.includeFuture = e.target.checked; render(); });
-  const chkIncludeWmtTransfill = document.getElementById('chkIncludeWmtTransfill');
-  if(chkIncludeWmtTransfill) chkIncludeWmtTransfill.addEventListener('change', (e)=>{ S.params.includeWmtTransfill = e.target.checked; render(); });
+  const sourceMatchesGroup=(source,group)=>{
+    if(group==='wmt') return !!source.isWmtTransfill;
+    if(group==='future') return !source.isWmtTransfill && (source.status||'current')==='future';
+    return !source.isWmtTransfill && (source.status||'current')!=='future';
+  };
+  document.querySelectorAll('.supply-group-check').forEach(el=>{
+    const selected=parseInt(el.dataset.selected||'0',10);
+    const total=parseInt(el.dataset.total||'0',10);
+    el.indeterminate=selected>0&&selected<total;
+    el.addEventListener('change',()=>{
+      const group=el.dataset.supplyGroupToggle;
+      S.supply.filter(s=>sourceMatchesGroup(s,group)).forEach(s=>{s.enabled=el.checked;});
+      if(group==='future') S.params.includeFuture=el.checked;
+      if(group==='wmt') S.params.includeWmtTransfill=el.checked;
+      render();
+    });
+  });
+  document.querySelectorAll('.supply-source-check').forEach(el=>el.addEventListener('change',()=>{
+    const source=S.supply.find(s=>s.id===el.dataset.toggleSupply);
+    if(!source) return;
+    source.enabled=el.checked;
+    const group=el.dataset.supplyGroup;
+    if(group==='future') S.params.includeFuture=S.supply.some(s=>sourceMatchesGroup(s,'future')&&supplySourceSelected(s));
+    if(group==='wmt') S.params.includeWmtTransfill=S.supply.some(s=>sourceMatchesGroup(s,'wmt')&&supplySourceSelected(s));
+    render();
+  }));
   const chkIncludeFutureQuick = document.getElementById('chkIncludeFutureQuick');
-  if(chkIncludeFutureQuick) chkIncludeFutureQuick.addEventListener('change', (e)=>{ S.params.includeFuture = e.target.checked; render(); });
+  if(chkIncludeFutureQuick) chkIncludeFutureQuick.addEventListener('change', (e)=>{
+    S.params.includeFuture=e.target.checked;
+    S.supply.filter(s=>sourceMatchesGroup(s,'future')).forEach(s=>{s.enabled=e.target.checked;});
+    render();
+  });
 
   document.querySelectorAll('[data-edit-supply]').forEach(b=>b.addEventListener('click', ()=>{ S.supplyForm=b.dataset.editSupply; render(); }));
   document.querySelectorAll('[data-del-supply]').forEach(b=>b.addEventListener('click', ()=>{
@@ -5710,17 +6264,93 @@ function attachHandlers(){
     render();
   });
 
+  const chkScenarioResiliency=document.getElementById('chkScenarioResiliency');
+  if(chkScenarioResiliency) chkScenarioResiliency.addEventListener('change',e=>{
+    S.scenarioResiliency=e.target.checked;
+    lastScenario=null;
+    render();
+  });
+
   const btnRunScenario = document.getElementById('btnRunScenario');
   if(btnRunScenario) btnRunScenario.addEventListener('click', ()=>{
+    const resiliency=PORTAL_MODE||S.scenarioResiliency!==false;
     const sourceIds = Array.from(document.querySelectorAll('.scenarioSourceList-item:checked')).map(el=>el.value);
     const nodeIds = Array.from(document.querySelectorAll('.scenarioNodeList-item:checked')).map(el=>el.value);
     const days = parseFloat(document.getElementById('fScenarioDays').value);
+    if(isNaN(days)||days<=0){ alert(`Enter a valid ${resiliency?'outage duration':'service period'} in days.`); return; }
+    if(!resiliency){
+      if(sourceIds.length!==1){ alert('Choose exactly one supply source for the direct-service comparison.'); return; }
+      if(nodeIds.length===0){ alert('Choose at least one demand node to serve.'); return; }
+      S.scenarioSourceIds=sourceIds;
+      S.scenarioNodeIds=nodeIds;
+      S.scenarioDays=days;
+      lastScenario=computeDirectServiceScenario(sourceIds[0],nodeIds,days);
+      render();
+      return;
+    }
     const turnaround = parseFloat(document.getElementById('fScenarioTurnaround').value);
     if(sourceIds.length===0 && nodeIds.length===0){ alert(PORTAL_MODE?'Check at least one site to report as down.':'Check at least one supply source or demand node to simulate down.'); return; }
-    if(isNaN(days)||days<=0){ alert('Enter a valid outage duration in days.'); return; }
     if(isNaN(turnaround)||turnaround<0){ alert('Enter a valid turnaround time in hours.'); return; }
     S.scenarioSourceIds = sourceIds; S.scenarioNodeIds = nodeIds; S.scenarioDays = days; S.scenarioTurnaround = turnaround;
     lastScenario = computeScenario(sourceIds, nodeIds, days, turnaround);
+    render();
+  });
+  const btnRunMultiComparison=document.getElementById('btnRunMultiComparison');
+  if(btnRunMultiComparison) btnRunMultiComparison.addEventListener('click',()=>{
+    const sourceIds=Array.from(document.querySelectorAll('.multiCompareSourceList-item:checked')).map(el=>el.value);
+    const nodeIds=Array.from(document.querySelectorAll('.multiCompareNodeList-item:checked')).map(el=>el.value);
+    const days=parseFloat(document.getElementById('fMultiCompareDays').value);
+    const prices={...(S.multiComparePrices||{})};
+    let priceError='';
+    document.querySelectorAll('.multiComparePriceField').forEach(el=>{
+      const value=parseFloat(el.value);
+      if(!Number.isFinite(value)||value<0) priceError='Enter a valid price per kg of zero or greater for every supply source.';
+      else prices[el.dataset.sourceId]=value;
+    });
+    if(sourceIds.length===0){ alert('Choose at least one supply source to compare.'); return; }
+    if(nodeIds.length===0){ alert('Choose at least one demand site to compare.'); return; }
+    if(isNaN(days)||days<=0){ alert('Enter a valid service period in days.'); return; }
+    if(priceError){ alert(priceError); return; }
+    S.multiComparePrices=prices;
+    S.multiCompareSourceIds=sourceIds;
+    S.multiCompareNodeIds=nodeIds;
+    S.multiCompareDays=days;
+    lastMultiComparison=computeMultiSourceComparison(sourceIds,nodeIds,days);
+    render();
+  });
+  const btnClearScenarioResults=document.getElementById('btnClearScenarioResults');
+  if(btnClearScenarioResults) btnClearScenarioResults.addEventListener('click',()=>{
+    lastScenario=null;
+    lastMultiComparison=null;
+    render();
+  });
+  document.querySelectorAll('.multiComparePriceField').forEach(field=>field.addEventListener('change',()=>{
+    const value=parseFloat(field.value);
+    if(!Number.isFinite(value)||value<0){ alert('Enter a valid price per kg of zero or greater.'); return; }
+    S.multiComparePrices={...(S.multiComparePrices||{}),[field.dataset.sourceId]:value};
+    if(lastMultiComparison){
+      const sourceIds=Array.from(document.querySelectorAll('.multiCompareSourceList-item:checked')).map(el=>el.value);
+      const nodeIds=Array.from(document.querySelectorAll('.multiCompareNodeList-item:checked')).map(el=>el.value);
+      const days=parseFloat(document.getElementById('fMultiCompareDays').value);
+      if(sourceIds.length&&nodeIds.length&&Number.isFinite(days)&&days>0){
+        S.multiCompareSourceIds=sourceIds;
+        S.multiCompareNodeIds=nodeIds;
+        S.multiCompareDays=days;
+        lastMultiComparison=computeMultiSourceComparison(sourceIds,nodeIds,days);
+        render();
+      }
+    }
+  }));
+  const btnResetMultiPrices=document.getElementById('btnResetMultiPrices');
+  if(btnResetMultiPrices) btnResetMultiPrices.addEventListener('click',()=>{
+    S.multiComparePrices={};
+    if(lastMultiComparison){
+      lastMultiComparison=computeMultiSourceComparison(
+        S.multiCompareSourceIds||[],
+        S.multiCompareNodeIds||[],
+        Number(S.multiCompareDays)||1
+      );
+    }
     render();
   });
   const btnLoadCustomerScenario = document.getElementById('btnLoadCustomerScenario');
@@ -5765,7 +6395,10 @@ function attachHandlers(){
     document.querySelectorAll(`.${btn.dataset.clearall}-item`).forEach(el=>el.checked=false);
   }));
 
-  if(S.activeTab==='results') drawMap();
+  if(S.activeTab==='results'){
+    drawMap();
+    attachNetworkMapInteractions();
+  }
   if(S.activeTab==='asset-results') drawAssetRecommendationMap();
   if(S.activeTab==='realestate') drawRealEstateMap();
 }
@@ -5825,7 +6458,7 @@ document.querySelectorAll('nav.tabs button').forEach(b=>{
 });
 /* PORTAL_BLOCK_START */
 const btnSampleTop = document.getElementById('btnSample');
-if(btnSampleTop) btnSampleTop.addEventListener('click', ()=>{ sampleData(); S.activeTab='results'; render(); });
+if(btnSampleTop) btnSampleTop.addEventListener('click', ()=>{ sampleData(); lastScenario=null; lastMultiComparison=null; S.activeTab='results'; render(); });
 /* PORTAL_BLOCK_END */
 const themeSelectTop = document.getElementById('themeSelect');
 if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e.target.value); });
@@ -5833,8 +6466,9 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
     lastScenario = null;
+    lastMultiComparison = null;
     render();
   }
 });
@@ -5881,7 +6515,7 @@ if(btnSaveScenarioTop) btnSaveScenarioTop.addEventListener('click', ()=>{
         const n = S.demand.find(x=>x.id===f.nodeId), s = S.supply.find(x=>x.id===f.sourceId);
         return { demandNode: n?n.name:f.nodeId, supplySource: s?s.name:f.sourceId, distanceMiles: f.dist, travelTimeHours: f.hours, isRealRoadDistance: f.isReal, volume: f.amt, trailerTrips: f.trips, effectiveLandedCost: f.effectiveLanded, totalCost: f.totalCost };
       }),
-      risk: S.demand.map(n=>{
+      risk: activeDemand().map(n=>{
         const r = lastComputed.risk[n.id];
         return { demandNode: n.name, consumption: n.rate, servicedVia: r.servicedVia, hubIndex: r.hubIdx, effectiveDistanceMiles: r.tierDist, withinTarget: r.tier!=='High', primarySourceDistanceMiles: r.primaryDist, riskTier: r.tier };
       }),
@@ -5906,8 +6540,20 @@ function applyScenarioFile(file, onDone){
       const data = JSON.parse(ev.target.result);
       if(!Array.isArray(data.demand) || !Array.isArray(data.supply)) throw new Error('File does not look like a saved scenario (missing demand/supply arrays).');
       const defaults = {trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false,};
-      S.demand = data.demand.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), rate:parseFloat(n.rate), safetyDays:parseFloat(n.safetyDays)||defaults.safetyDays }));
-      S.supply = data.supply.map(n=>({ id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon), capacity:parseFloat(n.capacity), cost:parseFloat(n.cost), status:(n.status==='future'?'future':'current') }));
+      S.demand = data.demand.map(n=>({
+        id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon),
+        rate:parseFloat(n.rate), safetyDays:parseFloat(n.safetyDays)||defaults.safetyDays,
+        status:n.status==='future'?'future':'current',
+        enabled:typeof n.enabled==='boolean'?n.enabled:true,
+      }));
+      S.supply = data.supply.map(n=>({
+        id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon),
+        capacity:parseFloat(n.capacity), cost:parseFloat(n.cost), status:(n.status==='future'?'future':'current'),
+        highPressureCapable:n.highPressureCapable!==false,
+        lowPressureCapable:n.lowPressureCapable!==false,
+        isWmtTransfill:!!n.isWmtTransfill,
+        enabled:typeof n.enabled==='boolean'?n.enabled:undefined,
+      }));
       S.params = Object.assign({}, defaults, data.params||{});
       // Normalize to the current unified trailerCapacities shape, whatever format the loaded
       // file actually has: already-correct (this format), the per-pressure-type arrays from an
@@ -5948,6 +6594,9 @@ function applyScenarioFile(file, onDone){
         };
       }
       S.demandForm=null; S.supplyForm=null;
+      S.multiComparePrices={};
+      lastScenario=null;
+      lastMultiComparison=null;
       onDone(null, data);
     } catch(err){
       onDone(err, null);
@@ -5973,7 +6622,7 @@ if(btnExportTop) btnExportTop.addEventListener('click', ()=>{
   if(!lastComputed){ alert('Load data and view Optimization Results first.'); return; }
   const {sourcing, risk, hubs, hycasUnits} = lastComputed;
   let csv = 'SOURCING PLAN\nDemand Node,Assigned Source,Source Status,Distance (mi),Travel Time,Distance Type,Volume,Trailers/day,Landed Cost,Daily Cost\n';
-  S.demand.forEach(n=>{
+  activeDemand().forEach(n=>{
     sourcing.nodeSummary[n.id].flows.forEach(f=>{
       const src = S.supply.find(s=>s.id===f.sourceId);
       csv += `"${n.name}","${src.name}",${(src.status||'current')==='future'?'Planned':'Current'},${f.dist.toFixed(1)},"${fmtHours(f.hours)}",${f.isReal?'Road':'Straight-line'},${f.amt.toFixed(1)},${f.trips},${f.effectiveLanded.toFixed(3)},${f.totalCost.toFixed(2)}\n`;
@@ -5988,7 +6637,7 @@ if(btnExportTop) btnExportTop.addEventListener('click', ()=>{
     csv += `Unit ${u.idx},${u.lat.toFixed(4)},${u.lon.toFixed(4)},"${u.cityRef?u.cityRef.name:''}","${u.cityRef?u.cityRef.state:''}",${u.cityRef?u.cityRef.dist.toFixed(1):''},"${u.nearestFacility?u.nearestFacility.name:''}",${u.nearestFacility?u.nearestFacilityDist.toFixed(1):''},${u.covered.length},${u.avgDist.toFixed(1)},"${fmtHours(u.avgHours)}",${u.maxDist.toFixed(1)},"${fmtHours(u.maxHours)}",${u.maxNodeRate.toFixed(1)},${u.capacitySufficient?'Yes':'No'}\n`;
   });
   csv += '\nRISK ASSESSMENT\nDemand Node,Consumption,Serviced Via,Effective Distance (mi),Within Target,Primary Source,Source Distance,Risk Tier\n';
-  S.demand.forEach(n=>{
+  activeDemand().forEach(n=>{
     const r = risk[n.id];
     const primary = sourcing.nodeSummary[n.id].primary;
     const srcName = primary? S.supply.find(s=>s.id===primary.sourceId).name : '';
