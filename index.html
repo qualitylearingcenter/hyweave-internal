@@ -113,8 +113,8 @@
   .maplegend .item{display:flex;align-items:center;gap:6px;margin:3px 0;}
   .mapwrap{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
   .mapwrap.map-expanded{position:fixed;inset:14px;z-index:1000;max-width:none !important;margin:0 !important;border-radius:12px;box-shadow:0 20px 70px rgba(0,0,0,.55);background:var(--map-bg);display:flex;align-items:center;justify-content:center;}
-  .mapwrap.map-expanded #mapsvg{width:100%;height:100%;cursor:grab;touch-action:none;}
-  .mapwrap.map-expanded #mapsvg.map-panning{cursor:grabbing;}
+  .mapwrap.map-expanded svg{width:100%;height:100%;cursor:grab;touch-action:none;}
+  .mapwrap.map-expanded svg.map-panning{cursor:grabbing;}
   .map-controls{position:absolute;right:12px;top:12px;z-index:60;display:flex;gap:6px;padding:6px;background:var(--legend-bg);border:1px solid var(--border);border-radius:8px;box-shadow:0 2px 8px var(--shadow);}
   .map-controls .btn{min-width:34px;padding:6px 9px;}
   .map-expanded .maplegend{max-height:45%;overflow:auto;}
@@ -2272,7 +2272,9 @@ function computeDirectServiceScenario(sourceId,nodeIds,serviceDays){
   const source=activeSupply().find(s=>s.id===sourceId);
   const nodes=activeDemand().filter(n=>nodeIds.includes(n.id));
   if(!source||nodes.length===0) return null;
-  const results=nodes.map(node=>{
+  const excludedSelfServiceNodes=nodes.filter(node=>isSelfServicePair(node,source));
+  const serviceableNodes=nodes.filter(node=>!isSelfServicePair(node,source));
+  const results=serviceableNodes.map(node=>{
     const volume=node.rate*serviceDays;
     const trailerPlan=trailerPlanForVolume(volume);
     const lane=nodeSourceDistance(node,source);
@@ -2288,15 +2290,28 @@ function computeDirectServiceScenario(sourceId,nodeIds,serviceDays){
     };
   });
   return {
-    mode:'direct',source,nodes,serviceDays,results,
-    dailyDemand:nodes.reduce((a,n)=>a+n.rate,0),
-    sourceCapacitySufficient:nodes.reduce((a,n)=>a+n.rate,0)<=source.capacity,
+    mode:'direct',source,nodes:serviceableNodes,excludedSelfServiceNodes,serviceDays,results,
+    dailyDemand:serviceableNodes.reduce((a,n)=>a+n.rate,0),
+    sourceCapacitySufficient:serviceableNodes.reduce((a,n)=>a+n.rate,0)<=source.capacity,
   };
+}
+
+// Treat matching facility names or effectively identical coordinates as the same physical DC.
+// A DC may remain available as a source for other locations, but it can never serve itself.
+function isSelfServicePair(node,source){
+  if(!node||!source) return false;
+  const normalizeName=value=>String(value||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const nodeName=normalizeName(node.name);
+  const sourceName=normalizeName(source.name);
+  if(nodeName&&sourceName&&nodeName===sourceName) return true;
+  const coordsValid=[node.lat,node.lon,source.lat,source.lon].every(v=>Number.isFinite(Number(v)));
+  return coordsValid&&haversineMiles(Number(node.lat),Number(node.lon),Number(source.lat),Number(source.lon))<=0.05;
 }
 
 // Multi-source direct-service comparison. Every selected source is priced against every
 // selected demand site. The lowest all-in option that can meet a site's daily consumption
-// is marked as that site's winner; insufficient-capacity lanes remain visible for context.
+// and is not the site itself is marked as that site's winner. Disallowed self-service and
+// insufficient-capacity lanes remain visible for context but can never win.
 function computeMultiSourceComparison(sourceIds,nodeIds,serviceDays){
   const sourceIdSet=new Set(sourceIds);
   const nodeIdSet=new Set(nodeIds);
@@ -2319,13 +2334,14 @@ function computeMultiSourceComparison(sourceIds,nodeIds,serviceDays){
       results.push({
         node,source,serviceDays,volume,trailerPlan,lane,transportationMiles,
         transportationCost,unitPrice,moleculeCost,allInCost:transportationCost+moleculeCost,
+        selfService:isSelfServicePair(node,source),
         sourceCapacitySufficient:node.rate<=source.capacity,
         isOptimal:false,
       });
     });
   });
   nodes.forEach(node=>{
-    const feasible=results.filter(r=>r.node.id===node.id&&r.sourceCapacitySufficient);
+    const feasible=results.filter(r=>r.node.id===node.id&&!r.selfService&&r.sourceCapacitySufficient);
     if(feasible.length){
       feasible.sort((a,b)=>a.allInCost-b.allInCost)[0].isOptimal=true;
     }
@@ -2334,6 +2350,7 @@ function computeMultiSourceComparison(sourceIds,nodeIds,serviceDays){
     const nodeOrder=nodes.findIndex(n=>n.id===a.node.id)-nodes.findIndex(n=>n.id===b.node.id);
     if(nodeOrder) return nodeOrder;
     if(a.isOptimal!==b.isOptimal) return a.isOptimal?-1:1;
+    if(a.selfService!==b.selfService) return a.selfService?1:-1;
     return a.allInCost-b.allInCost;
   });
   return {mode:'multi-direct',sources,nodes,serviceDays,results};
@@ -4167,7 +4184,7 @@ function renderScenarioTab(){
           <td><b>${money(r.allInCost,0)}</b></td>
           <td>${r.volume>0?money(r.allInCost/r.volume,2):'—'}</td>
         </tr>`).join('')}</tbody></table>
-        <div class="note">Each trailer trip includes a loaded ${esc(sc.source.name)} → demand-node leg and an empty return leg over the same distance. Molecule cost uses the selected source's ${money(sc.source.cost,2)}/${S.params.unit} price and the node's stored consumption rate × service days.</div>
+        <div class="note">Each trailer trip includes a loaded ${esc(sc.source.name)} → demand-node leg and an empty return leg over the same distance. Molecule cost uses the selected source's ${money(sc.source.cost,2)}/${S.params.unit} price and the node's stored consumption rate × service days.${(sc.excludedSelfServiceNodes||[]).length?` <b>Self-service excluded:</b> ${(sc.excludedSelfServiceNodes||[]).map(n=>esc(n.name)).join(', ')}.`:''}</div>
       </div>`;
   }
   if(lastScenario && lastScenario.mode!=='direct'){
@@ -4289,7 +4306,7 @@ function renderScenarioTab(){
       </div>`:'';
     const comparisonResults=comparison?`
       <div class="note" style="margin:0 0 10px">
-        Green outlined rows are the lowest feasible all-in source option for each selected site. A source must have enough daily capacity to meet that site's stored consumption rate to qualify.
+        Green outlined rows are the lowest feasible all-in source option for each selected site. A source must have enough daily capacity and cannot be the same DC it is serving.
       </div>
       <table><thead><tr><th>Demand Site</th><th>Supply Source</th><th>Service Volume</th><th>Distance</th><th>Travel Time</th><th>Trailer Trips</th><th>Transportation Miles</th><th>Molecule Cost</th><th>Transportation Cost</th><th>All-In Cost</th><th>All-In / ${S.params.unit}</th><th>Result</th></tr></thead>
       <tbody>${comparison.results.map(r=>`<tr class="${r.isOptimal?'multi-optimal-row':''}">
@@ -4304,7 +4321,7 @@ function renderScenarioTab(){
         <td>${money(r.transportationCost,0)}</td>
         <td><b>${money(r.allInCost,0)}</b></td>
         <td>${r.volume>0?money(r.allInCost/r.volume,2):'—'}</td>
-        <td>${r.isOptimal?'<span class="tag tag-low">✓ Optimal for site</span>':r.sourceCapacitySufficient?'<span style="color:var(--muted)">Compared</span>':'<span class="tag tag-high">Insufficient capacity</span>'}</td>
+        <td>${r.selfService?'<span class="tag tag-high">Self-service not allowed</span>':r.isOptimal?'<span class="tag tag-low">✓ Optimal for site</span>':r.sourceCapacitySufficient?'<span style="color:var(--muted)">Compared</span>':'<span class="tag tag-high">Insufficient capacity</span>'}</td>
       </tr>`).join('')}</tbody></table>
       <div class="note">Every option includes the selected site's consumption for ${fmt(comparison.serviceDays,1)} day(s), loaded delivery mileage, the same-distance empty return, and the selected source's molecule price.</div>`
       : '<div class="empty" style="padding:22px">Choose multiple sources and sites, then calculate to identify the optimal source for each site.</div>';
@@ -4312,7 +4329,7 @@ function renderScenarioTab(){
       ${optimalHubTiles}
       <div class="card">
         <h2>Multi-Source / Multi-Site Optimal Cost Comparison</h2>
-        <p class="desc">Select any combination of supply sources and demand sites. The app prices every pairing and highlights the lowest feasible all-in option for each site with a green rectangle.</p>
+        <p class="desc">Select any combination of supply sources and demand sites. The app prices every pairing and highlights the lowest feasible all-in option for each site with a green rectangle. A DC is never allowed to service itself.</p>
         <div class="row2">
           <div>
             <div class="subhead" style="margin-top:4px">Supply Sources</div>
@@ -4567,9 +4584,34 @@ function renderAssetPlacementRecommendationTab(){
       &nbsp;—&nbsp; Based on ${assetInventoryCount()} imported/entered asset(s), ${fmt(S.assetPlacement.targetRadius,0)}mi / ${fmt(S.assetPlacement.targetHours,1)}h reach, and ${fmt(S.assetPlacement.safetyDays,1)} storage day(s).
     </div>
     <div class="card">
-      <h2>Asset Placement Map</h2>
+      <div class="flexbetween">
+        <div><h2 style="margin-bottom:0">Asset Placement Map</h2><p class="desc">Click the map to expand it, then zoom or drag to explore locations.</p></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+          <select id="assetExportThemeSelect" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11.5px;background:var(--input-bg);color:var(--text)">
+            <option value="light" ${THEME!=='dark'?'selected':''}>☀ Light export</option>
+            <option value="dark" ${THEME==='dark'?'selected':''}>🌙 Dark export</option>
+          </select>
+          <button class="btn btn-small btn-outline" id="btnExportAssetPlacementCsv">⬇ Export Results CSV</button>
+          <button class="btn btn-small btn-outline" id="btnExportAssetPlacement">⬇ Export Map + Placement PDF</button>
+        </div>
+      </div>
       <p class="desc">HyCAS and Mobile Refuelers are purple triangles; trailers are amber diamonds. Circles show the configured response radius.</p>
-      <div class="mapwrap"><svg id="assetRecommendationSvg" viewBox="0 0 960 600" style="display:block;width:100%;height:auto;background:var(--map-bg)"></svg></div>
+      <div class="mapwrap" id="assetRecommendationMapWrap" style="max-width:1160px;margin:0 auto">
+        <svg id="assetRecommendationSvg" viewBox="0 0 960 600" style="display:block;width:100%;height:auto;background:var(--map-bg)"></svg>
+        <div class="map-controls">
+          <button class="btn btn-small btn-outline" id="btnAssetMapZoomOut" title="Zoom out">−</button>
+          <button class="btn btn-small btn-outline" id="btnAssetMapZoomIn" title="Zoom in">+</button>
+          <button class="btn btn-small btn-outline" id="btnAssetMapReset" title="Reset map view">Reset</button>
+          <button class="btn btn-small btn-primary" id="btnAssetExpandMap" title="Expand map">⛶ Expand</button>
+        </div>
+        <div class="maplegend">
+          <div class="item"><span class="swatch" style="background:#1E8A5F"></span>Demand center</div>
+          <div class="item"><span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #7A5195;margin-right:6px"></span>Compression asset</div>
+          <div class="item"><span class="swatch" style="background:#F2A900;border-radius:2px;transform:rotate(45deg)"></span>Trailer</div>
+          <div class="item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:1.3px dashed var(--muted);margin-right:6px"></span>Response radius (${fmt(S.assetPlacement.targetRadius,0)} mi)</div>
+        </div>
+        <div class="maptooltip" id="assetRecommendationTooltip"></div>
+      </div>
     </div>
     ${section('Compression',result.compression,'throughput')}
     ${section('Trailers',result.storage,'storage')}
@@ -4589,14 +4631,41 @@ function drawAssetRecommendationMap(){
     ...lastAssetPlacementComputed.storage.assets.map(a=>({...a,kind:'storage'})),
   ];
   all.forEach(a=>{const [x,y]=svgXY(a.lat,a.lon);const color=a.kind==='compression'?'#7A5195':'#F2A900';html+=`<circle cx="${x}" cy="${y}" r="${radius}" fill="${color}" fill-opacity=".045" stroke="${color}" stroke-width="1.2" stroke-dasharray="5,3"/>`;});
-  activeDemand().forEach(n=>{const [x,y]=svgXY(n.lat,n.lon);html+=`<circle cx="${x}" cy="${y}" r="5" fill="#1E8A5F" stroke="#fff" stroke-width="1.2"/>`;});
+  activeDemand().forEach(n=>{const [x,y]=svgXY(n.lat,n.lon);html+=`<circle cx="${x}" cy="${y}" r="5" fill="#1E8A5F" stroke="#fff" stroke-width="1.2" class="asset-demand-marker" data-id="${n.id}" style="cursor:pointer"/>`;});
   all.forEach(a=>{
     const [x,y]=svgXY(a.lat,a.lon);
+    const key=`${a.kind}:${a.assetId}`;
     html+=a.kind==='compression'
-      ? `<polygon points="${x},${y-9} ${x+8},${y+6} ${x-8},${y+6}" fill="#7A5195" stroke="#fff" stroke-width="1.4"/>`
-      : `<g transform="translate(${x},${y}) rotate(45)"><rect x="-7" y="-7" width="14" height="14" fill="#F2A900" stroke="#fff" stroke-width="1.4"/></g>`;
+      ? `<polygon points="${x},${y-9} ${x+8},${y+6} ${x-8},${y+6}" fill="#7A5195" stroke="#fff" stroke-width="1.4" class="asset-placement-marker" data-key="${esc(key)}" style="cursor:pointer"/>`
+      : `<g transform="translate(${x},${y}) rotate(45)" class="asset-placement-marker" data-key="${esc(key)}" style="cursor:pointer"><rect x="-7" y="-7" width="14" height="14" fill="#F2A900" stroke="#fff" stroke-width="1.4"/></g>`;
   });
   svg.innerHTML=html;
+
+  const wrap=document.getElementById('assetRecommendationMapWrap');
+  const tooltip=document.getElementById('assetRecommendationTooltip');
+  if(!wrap||!tooltip) return;
+  const showTooltip=(evt,content)=>{
+    const rect=wrap.getBoundingClientRect();
+    tooltip.innerHTML=content;
+    tooltip.style.display='block';
+    tooltip.style.left=Math.min(evt.clientX-rect.left+12,rect.width-300)+'px';
+    tooltip.style.top=Math.max(8,evt.clientY-rect.top-10)+'px';
+  };
+  svg.querySelectorAll('.asset-demand-marker').forEach(el=>{
+    el.addEventListener('mousemove',evt=>{
+      const node=activeDemand().find(n=>n.id===el.dataset.id);
+      if(node) showTooltip(evt,`<b>${esc(node.name)}</b><br><span class="mut">Demand center</span><br>${fmt(node.rate)} ${S.params.unit}/day`);
+    });
+    el.addEventListener('mouseleave',()=>tooltip.style.display='none');
+  });
+  svg.querySelectorAll('.asset-placement-marker').forEach(el=>{
+    el.addEventListener('mousemove',evt=>{
+      const asset=all.find(a=>`${a.kind}:${a.assetId}`===el.dataset.key);
+      if(!asset) return;
+      showTooltip(evt,`<b>${esc(asset.assetName)}</b><br><span class="mut">${asset.kind==='compression'?'Compression asset':'Trailer'} · ${asset.cityRef?esc(asset.cityRef.name)+', '+esc(asset.cityRef.state):'Unnamed area'}</span><br>Covers ${asset.covered.length} DC(s), ${fmt(asset.coveredDemand)} ${S.params.unit}/day<br>Avg / max reach: ${fmt(asset.avgDist,0)} mi (${fmtHours(asset.avgHours)}) / ${fmt(asset.maxDist,0)} mi (${fmtHours(asset.maxHours)})<br><span style="color:${asset.capacitySufficient?'#5FCF9B':'#F2647A'}">${asset.capacitySufficient?'Capacity sufficient':'Capacity shortfall'}</span>`);
+    });
+    el.addEventListener('mouseleave',()=>tooltip.style.display='none');
+  });
 }
 
 /* ===================== RENDER: REAL ESTATE ASSETS TAB ===================== */
@@ -4872,6 +4941,8 @@ function renderPricingTab(){
 /* ===================== MAP DRAWING ===================== */
 let networkMapViewBox = null;
 let networkMapExpanded = false;
+let assetMapViewBox = null;
+let assetMapExpanded = false;
 
 function attachNetworkMapInteractions(){
   const wrap=document.getElementById('networkMapWrap');
@@ -4971,6 +5042,85 @@ function attachNetworkMapInteractions(){
     drag=null;
     svg.classList.remove('map-panning');
     if(svg.hasPointerCapture(e.pointerId)) svg.releasePointerCapture(e.pointerId);
+  };
+  svg.addEventListener('pointerup',finishDrag);
+  svg.addEventListener('pointercancel',finishDrag);
+}
+
+function attachAssetRecommendationMapInteractions(){
+  const wrap=document.getElementById('assetRecommendationMapWrap');
+  const svg=document.getElementById('assetRecommendationSvg');
+  if(!wrap||!svg) return;
+  const full={x:0,y:0,w:PROJ.VBW,h:PROJ.VBH};
+  if(!assetMapViewBox) assetMapViewBox={...full};
+
+  const applyViewBox=()=>{
+    const v=assetMapViewBox;
+    svg.setAttribute('viewBox',`${v.x} ${v.y} ${v.w} ${v.h}`);
+  };
+  const clampViewBox=()=>{
+    const v=assetMapViewBox;
+    v.w=Math.max(full.w*0.06,Math.min(full.w,v.w));
+    v.h=v.w*(full.h/full.w);
+    v.x=Math.max(0,Math.min(full.w-v.w,v.x));
+    v.y=Math.max(0,Math.min(full.h-v.h,v.y));
+  };
+  const zoomAt=(factor,clientX,clientY)=>{
+    const v=assetMapViewBox;
+    const rect=svg.getBoundingClientRect();
+    const px=clientX==null?v.x+v.w/2:v.x+((clientX-rect.left)/rect.width)*v.w;
+    const py=clientY==null?v.y+v.h/2:v.y+((clientY-rect.top)/rect.height)*v.h;
+    const nextW=v.w*factor,nextH=v.h*factor;
+    const ratioX=(px-v.x)/v.w,ratioY=(py-v.y)/v.h;
+    v.x=px-ratioX*nextW;v.y=py-ratioY*nextH;v.w=nextW;v.h=nextH;
+    clampViewBox();applyViewBox();
+  };
+  const setExpanded=expanded=>{
+    assetMapExpanded=expanded;
+    wrap.classList.toggle('map-expanded',expanded);
+    document.body.classList.toggle('map-modal-open',expanded);
+    const button=document.getElementById('btnAssetExpandMap');
+    if(button){
+      button.textContent=expanded?'✕ Close':'⛶ Expand';
+      button.title=expanded?'Close expanded map':'Expand map';
+    }
+  };
+
+  applyViewBox();setExpanded(assetMapExpanded);
+  document.onkeydown=e=>{if(e.key==='Escape'&&assetMapExpanded)setExpanded(false);};
+  const expand=document.getElementById('btnAssetExpandMap');
+  if(expand) expand.addEventListener('click',e=>{e.stopPropagation();setExpanded(!assetMapExpanded);});
+  const zoomIn=document.getElementById('btnAssetMapZoomIn');
+  if(zoomIn) zoomIn.addEventListener('click',e=>{e.stopPropagation();zoomAt(0.72);});
+  const zoomOut=document.getElementById('btnAssetMapZoomOut');
+  if(zoomOut) zoomOut.addEventListener('click',e=>{e.stopPropagation();zoomAt(1/0.72);});
+  const reset=document.getElementById('btnAssetMapReset');
+  if(reset) reset.addEventListener('click',e=>{e.stopPropagation();assetMapViewBox={...full};applyViewBox();});
+
+  wrap.addEventListener('click',e=>{if(!assetMapExpanded&&!e.target.closest('.map-controls'))setExpanded(true);});
+  svg.addEventListener('wheel',e=>{
+    if(!assetMapExpanded)return;
+    e.preventDefault();zoomAt(e.deltaY<0?0.84:1/0.84,e.clientX,e.clientY);
+  },{passive:false});
+  svg.addEventListener('dblclick',e=>{if(assetMapExpanded){e.preventDefault();zoomAt(0.62,e.clientX,e.clientY);}});
+
+  let drag=null;
+  svg.addEventListener('pointerdown',e=>{
+    if(!assetMapExpanded||e.button!==0)return;
+    drag={x:e.clientX,y:e.clientY,startX:assetMapViewBox.x,startY:assetMapViewBox.y};
+    svg.classList.add('map-panning');svg.setPointerCapture(e.pointerId);
+  });
+  svg.addEventListener('pointermove',e=>{
+    if(!drag)return;
+    const rect=svg.getBoundingClientRect();
+    assetMapViewBox.x=drag.startX-(e.clientX-drag.x)*assetMapViewBox.w/rect.width;
+    assetMapViewBox.y=drag.startY-(e.clientY-drag.y)*assetMapViewBox.h/rect.height;
+    clampViewBox();applyViewBox();
+  });
+  const finishDrag=e=>{
+    if(!drag)return;
+    drag=null;svg.classList.remove('map-panning');
+    if(svg.hasPointerCapture(e.pointerId))svg.releasePointerCapture(e.pointerId);
   };
   svg.addEventListener('pointerup',finishDrag);
   svg.addEventListener('pointercancel',finishDrag);
@@ -5671,6 +5821,118 @@ async function exportPresentationMap(){
   }
 }
 
+function buildAssetPlacementMapSVG(exportTheme){
+  if(!lastAssetPlacementComputed) return '';
+  const VBW=1920,VBH=1080;
+  const PALETTES={
+    light:{BG:'#F5F6F8',PANEL:'#FFFFFF',BORDER:'#D9DEE5',MUTED:'#5A6472',TEXT:'#22303F',HEADING:'#0B2545',MAPFILL:'#FFFFFF',MAPSTROKE:'#CBD2DB',MAPLABEL:'#A9B2BE'},
+    dark:{BG:'#0F1620',PANEL:'#171F2B',BORDER:'#2B3644',MUTED:'#98A4B7',TEXT:'#E4E9F0',HEADING:'#EDF1F7',MAPFILL:'#1B2430',MAPSTROKE:'#3A4657',MAPLABEL:'#5A6B82'},
+  };
+  const PAL=PALETTES[exportTheme==='dark'?'dark':'light'];
+  const all=[
+    ...lastAssetPlacementComputed.compression.assets.map(a=>({...a,kind:'compression'})),
+    ...lastAssetPlacementComputed.storage.assets.map(a=>({...a,kind:'storage'})),
+  ];
+  const shortfalls=all.filter(a=>!a.capacitySufficient).length;
+  const outside=all.filter(a=>a.maxDist>S.assetPlacement.targetRadius||a.maxHours>S.assetPlacement.targetHours).length;
+  const mapX=36,mapY=118,mapW=1372,mapH=884;
+  const mp=fitProjection(mapW,mapH,0.94);
+  const toMap=(lat,lon)=>{const [x,y]=projectTo(lat,lon,mp);return[x+mapX,y+mapY];};
+  let svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${VBW}" height="${VBH}" viewBox="0 0 ${VBW} ${VBH}" font-family="Arial,Helvetica,sans-serif">`;
+  svg+=`<rect width="${VBW}" height="${VBH}" fill="${PAL.BG}"/>`;
+  svg+=`<text x="36" y="52" font-size="30" font-weight="700" fill="${PAL.HEADING}">HyWeave — Asset Placement Map</text>`;
+  svg+=`<text x="36" y="80" font-size="14" fill="${PAL.MUTED}">${all.length} assigned asset(s) · ${activeDemand().length} demand center(s) · ${fmt(S.assetPlacement.targetRadius,0)} mi / ${fmt(S.assetPlacement.targetHours,1)} h target</text>`;
+  svg+=`<rect x="36" y="90" width="120" height="4" fill="#0071CE"/><line x1="36" y1="100" x2="${VBW-36}" y2="100" stroke="${PAL.BORDER}"/>`;
+  svg+=svgReportBrandingSVG(VBW-36,45,PAL.MUTED);
+  svg+=`<rect x="${mapX}" y="${mapY}" width="${mapW}" height="${mapH}" fill="${PAL.PANEL}" stroke="${PAL.BORDER}"/>`;
+  svg+=`<defs><clipPath id="assetMapClip"><rect x="${mapX}" y="${mapY}" width="${mapW}" height="${mapH}"/></clipPath></defs><g clip-path="url(#assetMapClip)">`;
+  Object.values(STATE_PATHS).forEach(d=>{svg+=`<path d="${reprojectPathD(d,mp,mapX,mapY)}" fill="${PAL.MAPFILL}" stroke="${PAL.MAPSTROKE}" stroke-width="1"/>`;});
+  STATE_LABELS.forEach(s=>{const[x,y]=toMap(s.lat,s.lon);svg+=`<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="11" fill="${PAL.MAPLABEL}" text-anchor="middle" dominant-baseline="middle">${s.abbr}</text>`;});
+  const radius=S.assetPlacement.targetRadius*1.60934*mp.scale;
+  all.forEach(a=>{const[x,y]=toMap(a.lat,a.lon),color=a.kind==='compression'?'#7A5195':'#F2A900';svg+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${radius.toFixed(1)}" fill="${color}" fill-opacity=".045" stroke="${color}" stroke-width="1.6" stroke-dasharray="6,4"/>`;});
+  activeDemand().forEach(n=>{const[x,y]=toMap(n.lat,n.lon);svg+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="#1E8A5F" stroke="#fff" stroke-width="1.6"/>`;});
+  all.forEach(a=>{
+    const[x,y]=toMap(a.lat,a.lon);
+    svg+=a.kind==='compression'
+      ?`<polygon points="${x.toFixed(1)},${(y-12).toFixed(1)} ${(x+10).toFixed(1)},${(y+8).toFixed(1)} ${(x-10).toFixed(1)},${(y+8).toFixed(1)}" fill="#7A5195" stroke="#fff" stroke-width="1.8"/>`
+      :`<g transform="translate(${x.toFixed(1)},${y.toFixed(1)}) rotate(45)"><rect x="-9" y="-9" width="18" height="18" fill="#F2A900" stroke="#fff" stroke-width="1.8"/></g>`;
+  });
+  svg+='</g>';
+  const sbX=mapX+mapW+24,sbW=VBW-36-sbX;
+  svg+=`<rect x="${sbX}" y="${mapY}" width="${sbW}" height="${mapH}" fill="${PAL.PANEL}" stroke="${PAL.BORDER}" rx="6"/>`;
+  let sy=mapY+38;
+  svg+=`<text x="${sbX+20}" y="${sy}" font-size="13" font-weight="700" fill="${PAL.MUTED}">PLACEMENT SUMMARY</text>`;sy+=42;
+  const summary=[['Compression placements',lastAssetPlacementComputed.compression.assets.length],['Trailer placements',lastAssetPlacementComputed.storage.assets.length],['Capacity shortfalls',shortfalls],['Outside reach target',outside]];
+  summary.forEach(([label,value])=>{svg+=`<text x="${sbX+20}" y="${sy}" font-size="28" font-weight="800" fill="${PAL.HEADING}">${value}</text><text x="${sbX+20}" y="${sy+20}" font-size="12" fill="${PAL.MUTED}">${esc(label)}</text>`;sy+=70;});
+  sy+=12;svg+=`<text x="${sbX+20}" y="${sy}" font-size="13" font-weight="700" fill="${PAL.MUTED}">LEGEND</text>`;sy+=32;
+  const legend=[['#1E8A5F','Demand center'],['#7A5195','Compression asset'],['#F2A900','Trailer placement']];
+  legend.forEach(([color,label])=>{svg+=`<circle cx="${sbX+28}" cy="${sy-4}" r="7" fill="${color}" stroke="#fff"/><text x="${sbX+48}" y="${sy}" font-size="13" fill="${PAL.TEXT}">${label}</text>`;sy+=30;});
+  sy+=14;svg+=`<text x="${sbX+20}" y="${sy}" font-size="13" font-weight="700" fill="${PAL.MUTED}">ASSUMPTIONS</text>`;sy+=30;
+  [`Response radius: ${fmt(S.assetPlacement.targetRadius,0)} mi`,`Max response time: ${fmt(S.assetPlacement.targetHours,1)} h`,`Safety stock: ${fmt(S.assetPlacement.safetyDays,1)} day(s)`].forEach(line=>{svg+=`<text x="${sbX+20}" y="${sy}" font-size="13" fill="${PAL.TEXT}">${esc(line)}</text>`;sy+=26;});
+  svg+=`<line x1="36" y1="${VBH-40}" x2="${VBW-36}" y2="${VBH-40}" stroke="${PAL.BORDER}"/><text x="36" y="${VBH-16}" font-size="11.5" fill="${PAL.MUTED}">Generated by HyWeave — ${new Date().toLocaleDateString()}</text><text x="${VBW-36}" y="${VBH-16}" font-size="11.5" fill="${PAL.MUTED}" text-anchor="end">Asset placement recommendation</text></svg>`;
+  return svg;
+}
+
+function buildAssetPlacementDetailPageSVG(exportTheme,label,assets,pageNumber=1,totalPages=1){
+  const columns=[
+    {label:'Assigned Asset',widthFrac:.16},{label:'Proposed Location',widthFrac:.19},{label:'Nearest Facility',widthFrac:.18},
+    {label:'DCs',widthFrac:.06},{label:'Coverage Demand',widthFrac:.12},{label:'Avg / Max Reach',widthFrac:.16},{label:'Capacity Check',widthFrac:.13},
+  ];
+  const rows=assets.map(a=>[
+    {main:a.assetName,sub:a.assetType==='trailer'?`storage ${fmt(a.assetStorageCapacity,0)} ${S.params.unit}`:`compression ${fmt(a.assetCapacity,0)} · storage ${fmt(a.assetStorageCapacity,0)}`},
+    {main:a.cityRef?`${a.cityRef.name}, ${a.cityRef.state}`:'Unnamed area',sub:`${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}`},
+    {main:a.nearestFacility?a.nearestFacility.name:'—',sub:a.nearestFacility?`${fmt(a.nearestFacilityDist,0)} mi away`:''},
+    `${a.covered.length}`,`${fmt(a.coveredDemand)} ${S.params.unit}/day`,
+    {main:`${fmt(a.avgDist,0)} mi (${fmtHours(a.avgHours)})`,sub:`max ${fmt(a.maxDist,0)} mi (${fmtHours(a.maxHours)})`},
+    a.capacitySufficient?'Sufficient':`Needs ${fmt(a.capacityDetail,0)}`,
+  ]);
+  const pageLabel=totalPages>1?` — Page ${pageNumber} of ${totalPages}`:'';
+  return buildTablePageSVG(exportTheme,`${label} Placement Plan`,`${assets.length} placement row(s) on this page · ${fmt(S.assetPlacement.targetRadius,0)}mi / ${fmt(S.assetPlacement.targetHours,1)}h target${pageLabel}`,columns,rows);
+}
+
+function exportAssetPlacementCsv(){
+  if(!lastAssetPlacementComputed){alert('View Asset Placement Results first.');return;}
+  const q=value=>`"${String(value==null?'':value).replace(/"/g,'""')}"`;
+  const rows=[['Category','Assigned Asset','Asset Type','Proposed Location','State','Latitude','Longitude','Nearest Facility','Nearest Facility Distance (mi)','DCs Covered','Covered DC Names','Coverage Demand','Avg Reach (mi)','Avg Reach Time','Max Reach (mi)','Max Reach Time','Available Capacity','Required Capacity','Capacity Status','Reach Status']];
+  const add=(category,a)=>rows.push([
+    category,a.assetName,a.assetType,a.cityRef?a.cityRef.name:'Unnamed area',a.cityRef?a.cityRef.state:'',a.lat.toFixed(5),a.lon.toFixed(5),
+    a.nearestFacility?a.nearestFacility.name:'',a.nearestFacility?fmt(a.nearestFacilityDist,1):'',a.covered.length,a.covered.map(n=>n.name).join('; '),
+    fmt(a.coveredDemand,1),fmt(a.avgDist,1),fmtHours(a.avgHours),fmt(a.maxDist,1),fmtHours(a.maxHours),
+    fmt(a.assetCapacity,1),fmt(a.capacityDetail,1),a.capacitySufficient?'Sufficient':'Shortfall',
+    a.maxDist<=S.assetPlacement.targetRadius&&a.maxHours<=S.assetPlacement.targetHours?'Within target':'Outside target',
+  ]);
+  lastAssetPlacementComputed.compression.assets.forEach(a=>add('Compression',a));
+  lastAssetPlacementComputed.storage.assets.forEach(a=>add('Trailer',a));
+  const csv=rows.map(row=>row.map(q).join(',')).join('\n');
+  const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  const link=document.createElement('a');link.href=url;link.download=`hyweave_asset_placement_${new Date().toISOString().slice(0,10)}.csv`;link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+async function exportAssetPlacementReports(){
+  if(!lastAssetPlacementComputed){alert('View Asset Placement Results first.');return;}
+  const themeSel=document.getElementById('assetExportThemeSelect');
+  const exportTheme=themeSel?themeSel.value:'light';
+  const bg=exportTheme==='dark'?'#0F1620':'#F5F6F8';
+  const dateStr=new Date().toISOString().slice(0,10);
+  const mapSvg=buildAssetPlacementMapSVG(exportTheme);
+  const ok=await svgToPngDownload(mapSvg,`hyweave_asset_placement_map_${exportTheme}_${dateStr}.png`,bg);
+  if(!ok){alert('Could not render the asset placement map image.');return;}
+  try{
+    const pages=[await svgToJpegBytes(mapSvg,bg)],perPage=18;
+    const groups=[['Compression',lastAssetPlacementComputed.compression.assets],['Trailer',lastAssetPlacementComputed.storage.assets]];
+    for(const[label,assets]of groups){
+      if(!assets.length)continue;
+      const count=Math.ceil(assets.length/perPage);
+      for(let page=0;page<count;page++){
+        const slice=assets.slice(page*perPage,(page+1)*perPage);
+        pages.push(await svgToJpegBytes(buildAssetPlacementDetailPageSVG(exportTheme,label,slice,page+1,count),bg));
+      }
+    }
+    downloadBytes(buildPdfFromJpegs(pages),`hyweave_asset_placement_report_${exportTheme}_${dateStr}.pdf`,'application/pdf');
+  }catch(error){alert(`The map PNG was exported, but the placement PDF could not be created: ${error.message}`);}
+}
+
 /* ===================== AUTOCOMPLETE ===================== */
 function wireAutocomplete(inputId, ddId, latId, lonId){
   const input = document.getElementById(inputId);
@@ -5992,6 +6254,11 @@ function attachHandlers(){
   const btnExportMapImg = document.getElementById('btnExportMapImg');
   if(btnExportMapImg) btnExportMapImg.addEventListener('click', exportPresentationMap);
 
+  const btnExportAssetPlacement=document.getElementById('btnExportAssetPlacement');
+  if(btnExportAssetPlacement) btnExportAssetPlacement.addEventListener('click',exportAssetPlacementReports);
+  const btnExportAssetPlacementCsv=document.getElementById('btnExportAssetPlacementCsv');
+  if(btnExportAssetPlacementCsv) btnExportAssetPlacementCsv.addEventListener('click',exportAssetPlacementCsv);
+
   const chkShowTrailerRadius = document.getElementById('chkShowTrailerRadius');
   if(chkShowTrailerRadius) chkShowTrailerRadius.addEventListener('change', (e)=>{ S.showTrailerRadius = e.target.checked; render(); });
   const chkShowHycasRadius = document.getElementById('chkShowHycasRadius');
@@ -6285,6 +6552,11 @@ function attachHandlers(){
       S.scenarioNodeIds=nodeIds;
       S.scenarioDays=days;
       lastScenario=computeDirectServiceScenario(sourceIds[0],nodeIds,days);
+      if(lastScenario&&lastScenario.results.length===0){
+        lastScenario=null;
+        alert('A DC cannot service itself. Select at least one different demand node for this source.');
+        return;
+      }
       render();
       return;
     }
@@ -6399,7 +6671,10 @@ function attachHandlers(){
     drawMap();
     attachNetworkMapInteractions();
   }
-  if(S.activeTab==='asset-results') drawAssetRecommendationMap();
+  if(S.activeTab==='asset-results'){
+    drawAssetRecommendationMap();
+    attachAssetRecommendationMapInteractions();
+  }
   if(S.activeTab==='realestate') drawRealEstateMap();
 }
 
