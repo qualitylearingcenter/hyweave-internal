@@ -717,7 +717,7 @@ function importAssetCSV(file){
 let S = {
   demand: [],
   supply: [],
-  params: { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage: true, hycasStorageCapacity: 50, hycasCoLocateTrailer: false, },
+  params: { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage: true, hycasStorageCapacity: 50, hycasCoLocateTrailer: false, },
   activeTab: 'params',
   demandForm: null, // editing id or null
   supplyForm: null,
@@ -728,7 +728,7 @@ let S = {
   realEstate: [], showRealEstateOverlay: true,
   aiChatOpen: false, aiChatMessages: [], aiChatBusy: false,
   exportBranding: { companyLogo: null, companyLogoName: '', customerLogo: null, customerLogoName: '', customerName: '' },
-  assetPlacement: { safetyDays:1.5, targetRadius:250, targetHours:8 },
+  assetPlacement: { safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, maxNodesDownAll:true },
   distanceOverrides: [],
   pricing: { mode:'lease', trailerPrice: 1000000, hycasPrice: 3500000, nodePrice: 0,
              trailerLeaseRate: 22000, hycasLeaseRate: 73000, nodeLeaseRate: 0, leaseTermMonths: 60,
@@ -1307,7 +1307,7 @@ function sampleData(){
     {id:uid(), name:'Oklahoma City Regional Fill', city:'Oklahoma City, OK', lat:35.4676, lon:-97.5164, capacity:700, cost:2.60, status:'current'},
     {id:uid(), name:'Planned Beaumont H2 Plant (2027)', city:'Beaumont, TX', lat:30.0802, lon:-94.1266, capacity:1500, cost:2.05, status:'future'},
   ];
-  S.params = { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage:true, hycasStorageCapacity:50, hycasCoLocateTrailer:false };
+  S.params = { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage:true, hycasStorageCapacity:50, hycasCoLocateTrailer:false };
 }
 
 /* ===================== OPTIMIZATION ===================== */
@@ -2077,12 +2077,10 @@ function expandedAssetsForPlacement(category){
 // have assets of that type, then matches your actual named assets to those locations (biggest
 // capacity to the highest-need location, and so on down), rather than searching for a count that
 // guarantees a target.
-//  - Compression: capacity is throughput (kg/day) — checked against the single largest covered
-//    node, same reasoning as Mobile HyCAS (a compression failure hits one node at a time).
-//  - Storage: capacity is total volume (kg) — checked against the AGGREGATE covered demand times
-//    a safety-stock buffer, same reasoning as trailer staging (a storage asset's volume gets
-//    drawn down by everything it covers, not just one node at a time).
-function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays){
+// Capacity is tested against the highest-consumption covered nodes up to the configured
+// simultaneous-outage limit. Compression uses their combined daily throughput; storage uses
+// that same combined demand multiplied by the safety-stock buffer.
+function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays, maxNodesDown){
   const demand=activeDemand();
   if(demand.length===0 || assetList.length===0) return [];
   const k = Math.max(1, Math.min(assetList.length, demand.length));
@@ -2107,16 +2105,18 @@ function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays){
     const maxDist = dists.length? Math.max(...dists) : 0;
     const coveredDemand = covered.reduce((a,n)=>a+n.rate,0);
     const maxNodeRate = covered.length? Math.max(...covered.map(n=>n.rate)) : 0;
+    const simultaneousNodes=[...covered].sort((a,b)=>b.rate-a.rate).slice(0,Math.max(1,Math.min(maxNodesDown,covered.length)));
+    const simultaneousDemand=simultaneousNodes.reduce((sum,n)=>sum+n.rate,0);
     // "need" is whichever quantity that location's assigned asset will actually be judged
     // against — lets us match biggest-capacity assets to the highest-need locations below.
-    const need = assetType==='compression' ? maxNodeRate : coveredDemand*safetyDays;
+    const need = assetType==='compression' ? simultaneousDemand : simultaneousDemand*safetyDays;
 
     return {
       lat:cLat, lon:cLon, centroidLat:site.centroidLat, centroidLon:site.centroidLon,
       townResolved:site.townResolved, townOffsetMiles:site.townOffsetMiles,
       cityRef, nearestFacility, nearestFacilityDist:bestD,
       covered, coveredDemand, avgDist, maxDist, avgHours: avgDist/S.params.avgSpeed, maxHours: maxDist/S.params.avgSpeed,
-      maxNodeRate, need,
+      maxNodeRate, simultaneousNodes, simultaneousDemand, simultaneousNodeCount:simultaneousNodes.length, need,
     };
   }).filter(Boolean);
 
@@ -2147,16 +2147,25 @@ function syncAssetPlacementTargets(){
     const n=Number(value);
     return Number.isFinite(n)&&n>0?n:fallback;
   };
+  const demandCount=Math.max(1,activeDemand().length);
+  const requestedNodes=Math.floor(Number(S.params.maxNodesDown));
+  const maxNodesDownAll=!Number.isFinite(requestedNodes)||requestedNodes<=0||requestedNodes>=demandCount;
+  const maxNodesDown=maxNodesDownAll?demandCount:Math.max(1,requestedNodes);
   const targets={
     safetyDays:positiveOr(S.params.safetyDays,1.5),
     targetRadius:positiveOr(S.params.targetRadius,250),
     targetHours:positiveOr(S.params.targetHours,8),
+    maxNodesDown,
+    maxNodesDownAll,
   };
   // Input Parameters is the single source of truth. Keep the legacy object populated so
   // saved scenarios and report/export code from earlier builds remain compatible.
   S.params.safetyDays=targets.safetyDays;
   S.params.targetRadius=targets.targetRadius;
   S.params.targetHours=targets.targetHours;
+  // Zero is the durable "all selected nodes" sentinel, so adding more demand nodes keeps the
+  // assumption set to all instead of freezing it at the old node count.
+  S.params.maxNodesDown=maxNodesDownAll?0:maxNodesDown;
   S.assetPlacement={...targets};
   return targets;
 }
@@ -2172,7 +2181,7 @@ function computeAssetPlacement(){
 
   function forType(type){
     const list = expandedAssetsForPlacement(type);
-    const assets = buildAssetPlacementForType(baseRisk, list, type, ap.safetyDays);
+    const assets = buildAssetPlacementForType(baseRisk, list, type, ap.safetyDays, ap.maxNodesDown);
     // Asset Placement has no auto-search loop (the count is fixed by inventory), so real reach
     // can be applied directly to whatever the clustering+matching step produced.
     maybeRefreshTownCenters(assets);
@@ -3380,6 +3389,10 @@ function renderParamsTabLegacy(){
 
 function renderParamsTab(){
   const p=S.params;
+  const activeNodeCount=Math.max(1,activeDemand().length);
+  const requestedMaxNodes=Math.floor(Number(p.maxNodesDown));
+  const maxNodesDownAll=!Number.isFinite(requestedMaxNodes)||requestedMaxNodes<=0||requestedMaxNodes>=activeNodeCount;
+  const maxNodesDownValue=maxNodesDownAll?activeNodeCount:Math.max(1,requestedMaxNodes);
   return `
   <div class="params-layout">
     <div class="card params-import-card">
@@ -3445,9 +3458,13 @@ function renderParamsTab(){
             <label>Max Resupply Time: <span class="rangeval" id="pTargetHoursVal">${p.targetHours} h</span></label>
             <input id="pTargetHours" type="range" min="0.5" max="24" step="0.5" value="${p.targetHours}">
           </div>
+          <div class="field">
+            <label>Maximum Nodes Down Simultaneously: <span class="rangeval" id="pMaxNodesDownVal">${maxNodesDownAll?`All (${activeNodeCount})`:maxNodesDownValue}</span></label>
+            <input id="pMaxNodesDown" type="range" min="1" max="${activeNodeCount}" step="1" value="${maxNodesDownValue}" ${activeDemand().length?'':'disabled'}>
+          </div>
           <details class="params-help">
             <summary>How targets affect placement</summary>
-            <div>Each node stores its own safety-stock target. Radius and time determine the smallest recommended staging-hub network; exceeding either target raises risk.</div>
+            <div>Each node stores its own safety-stock target. Radius and time determine the smallest recommended staging-hub network. The simultaneous-outage setting tests asset capacity against the highest-consumption nodes that could be down at the same time.</div>
           </details>
         </section>
 
@@ -4442,6 +4459,8 @@ function renderScenarioTab(){
 /* ===================== RENDER: ASSET PLACEMENT TAB ===================== */
 function renderAssetPlacementTab(){
   const ap = syncAssetPlacementTargets();
+  const activeNodeCount=Math.max(1,activeDemand().length);
+  const outageLabel=ap.maxNodesDownAll?`all ${activeNodeCount} selected nodes`:`up to ${ap.maxNodesDown} nodes`;
   const editingRaw = S.assets.find(a=>a.id===S.assetForm);
   const editing = editingRaw ? normalizedAssetGroup(editingRaw) : null;
 
@@ -4473,7 +4492,7 @@ function renderAssetPlacementTab(){
           <td>${a.covered.length}</td>
           <td>${fmt(a.coveredDemand)} ${S.params.unit}/day</td>
           <td>${fmt(a.avgDist,0)} mi (${fmtHours(a.avgHours)}) / ${fmt(a.maxDist,0)} mi (${fmtHours(a.maxHours)})</td>
-          <td>${a.capacitySufficient?'<span class="tag tag-low">Sufficient</span>':`<span class="tag tag-high">Insufficient (needs ${fmt(a.capacityDetail,0)})</span>`}</td>
+          <td>${a.capacitySufficient?'<span class="tag tag-low">Sufficient</span>':`<span class="tag tag-high">Insufficient (needs ${fmt(a.capacityDetail,0)})</span>`}<br><span style="color:var(--muted);font-size:10.5px">${a.simultaneousNodeCount} simultaneous node(s)</span></td>
         </tr>`).join('')}
       </tbody></table>
     </div>`;
@@ -4545,9 +4564,13 @@ function renderAssetPlacementTab(){
           <div class="field"><label>Target Max Response Time (hours)</label><input id="fAssetTargetHours" type="number" min="0.5" step="0.5" value="${ap.targetHours}"></div>
         </div>
         <div class="field"><label>Safety-Stock Days (for trailer capacity checks)</label><input id="fAssetSafetyDays" type="number" min="0.5" step="0.5" value="${ap.safetyDays}"></div>
+        <div class="field">
+          <label>Maximum Nodes Down Simultaneously: <span class="rangeval" id="fAssetMaxNodesDownVal">${ap.maxNodesDownAll?`All (${activeNodeCount})`:ap.maxNodesDown}</span></label>
+          <input id="fAssetMaxNodesDown" type="range" min="1" max="${activeNodeCount}" step="1" value="${ap.maxNodesDown}">
+        </div>
         <button class="btn btn-primary" id="btnRecalcAssets">Run Asset Placement Recommendation</button>
       </div>
-      <div class="note" style="margin-top:0">HyCAS and Mobile Refueler compression capacity is checked against the single largest demand node each unit covers. Trailer storage capacity is checked against combined covered demand times the safety-stock days above. Onboard storage for compression assets is retained and shown with each assigned unit.</div>
+      <div class="note" style="margin-top:0">Capacity is currently evaluated for ${outageLabel}. For each placement, the model uses the highest-consumption covered nodes up to that limit. Compression checks their combined daily demand; trailer storage checks that demand times the safety-stock days above. Onboard storage for compression assets is retained and shown with each assigned unit.</div>
     </div>
     <div>
       ${!result?'<div class="card"><div class="empty">Add at least one asset to see a placement plan.</div></div>':`
@@ -4570,6 +4593,8 @@ function renderAssetPlacementRecommendationTab(){
   if(activeDemand().length===0) return `<div class="card"><div class="empty">Select demand nodes before generating an asset placement recommendation.</div></div>`;
   if(S.assets.length===0) return `<div class="card"><div class="empty">Add assets on the Asset Placement tab or drop an asset file into Input Parameters.</div></div>`;
   const ap=syncAssetPlacementTargets();
+  const activeNodeCount=Math.max(1,activeDemand().length);
+  const outageLabel=ap.maxNodesDownAll?`all ${activeNodeCount} selected nodes`:`up to ${ap.maxNodesDown} nodes`;
   const result=computeAssetPlacement();
   lastAssetPlacementComputed=result;
   const all=[...result.compression.assets,...result.storage.assets];
@@ -4587,7 +4612,7 @@ function renderAssetPlacementRecommendationTab(){
         <td>${a.nearestFacility?`${esc(a.nearestFacility.name)}<br><span style="color:var(--muted)">${fmt(a.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
         <td>${a.covered.length}</td><td>${fmt(a.coveredDemand)} ${S.params.unit}/day</td>
         <td>${fmt(a.avgDist,0)} mi (${fmtHours(a.avgHours)}) / ${fmt(a.maxDist,0)} mi (${fmtHours(a.maxHours)})</td>
-        <td>${a.capacitySufficient?'<span class="tag tag-low">Sufficient</span>':`<span class="tag tag-high">Needs ${fmt(a.capacityDetail,0)} ${esc(capacityLabel)}</span>`}</td>
+        <td>${a.capacitySufficient?'<span class="tag tag-low">Sufficient</span>':`<span class="tag tag-high">Needs ${fmt(a.capacityDetail,0)} ${esc(capacityLabel)}</span>`}<br><span style="color:var(--muted);font-size:10.5px">Top ${a.simultaneousNodeCount} covered node(s)</span></td>
       </tr>`).join('')}</tbody></table>
     </div>`;
   }
@@ -4600,7 +4625,7 @@ function renderAssetPlacementRecommendationTab(){
         </div>
         <span class="tag tag-low" style="white-space:nowrap">Synced with Input Parameters</span>
       </div>
-      <div class="row3" style="margin-top:14px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:14px">
         <div class="field">
           <label>Delivery Radius: <span class="rangeval" id="assetRecTargetRadiusVal">${fmt(ap.targetRadius,0)} mi</span></label>
           <input id="assetRecTargetRadius" type="range" min="25" max="600" step="25" value="${ap.targetRadius}">
@@ -4613,8 +4638,12 @@ function renderAssetPlacementRecommendationTab(){
           <label>Safety Stock: <span class="rangeval" id="assetRecSafetyDaysVal">${fmt(ap.safetyDays,1)} days</span></label>
           <input id="assetRecSafetyDays" type="range" min="0.5" max="10" step="0.5" value="${ap.safetyDays}">
         </div>
+        <div class="field">
+          <label>Maximum Nodes Down Simultaneously: <span class="rangeval" id="assetRecMaxNodesDownVal">${ap.maxNodesDownAll?`All (${activeNodeCount})`:ap.maxNodesDown}</span></label>
+          <input id="assetRecMaxNodesDown" type="range" min="1" max="${activeNodeCount}" step="1" value="${ap.maxNodesDown}">
+        </div>
       </div>
-      <div class="note" style="margin-top:4px">The displayed value updates while you drag. The placement recommendation, reach checks, map radius, and capacity checks refresh when you release the slider.</div>
+      <div class="note" style="margin-top:4px">The displayed value updates while you drag. The placement recommendation, reach checks, map radius, and capacity checks refresh when you release the slider. Selecting the highest outage value means all currently selected nodes.</div>
     </div>
     ${calculationReadinessBanner()}
     <div class="kpirow">
@@ -4625,7 +4654,7 @@ function renderAssetPlacementRecommendationTab(){
     </div>
     <div class="card status-card ${!shortfalls&&!outside?'status-ok':''}">
       <b class="status-title">${!shortfalls&&!outside?'✓ Recommendation meets the configured targets':'⚠ Recommendation needs review'}</b>
-      &nbsp;—&nbsp; Based on ${assetInventoryCount()} imported/entered asset(s), ${fmt(ap.targetRadius,0)}mi / ${fmt(ap.targetHours,1)}h reach, and ${fmt(ap.safetyDays,1)} storage day(s).
+      &nbsp;—&nbsp; Based on ${assetInventoryCount()} imported/entered asset(s), ${fmt(ap.targetRadius,0)}mi / ${fmt(ap.targetHours,1)}h reach, ${fmt(ap.safetyDays,1)} storage day(s), and capacity for ${outageLabel}.
     </div>
     <div class="card">
       <div class="flexbetween">
@@ -5885,7 +5914,7 @@ function buildAssetPlacementMapSVG(exportTheme){
   let svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${VBW}" height="${VBH}" viewBox="0 0 ${VBW} ${VBH}" font-family="Arial,Helvetica,sans-serif">`;
   svg+=`<rect width="${VBW}" height="${VBH}" fill="${PAL.BG}"/>`;
   svg+=`<text x="36" y="52" font-size="30" font-weight="700" fill="${PAL.HEADING}">HyWeave — Asset Placement Map</text>`;
-  svg+=`<text x="36" y="80" font-size="14" fill="${PAL.MUTED}">${all.length} assigned asset(s) · ${activeDemand().length} demand center(s) · ${fmt(S.assetPlacement.targetRadius,0)} mi / ${fmt(S.assetPlacement.targetHours,1)} h target</text>`;
+  svg+=`<text x="36" y="80" font-size="14" fill="${PAL.MUTED}">${all.length} assigned asset(s) · ${activeDemand().length} demand center(s) · ${fmt(S.assetPlacement.targetRadius,0)} mi / ${fmt(S.assetPlacement.targetHours,1)} h target · ${S.assetPlacement.maxNodesDownAll?'all nodes':`up to ${S.assetPlacement.maxNodesDown} nodes`} down</text>`;
   svg+=`<rect x="36" y="90" width="120" height="4" fill="#0071CE"/><line x1="36" y1="100" x2="${VBW-36}" y2="100" stroke="${PAL.BORDER}"/>`;
   svg+=svgReportBrandingSVG(VBW-36,45,PAL.MUTED);
   svg+=`<rect x="${mapX}" y="${mapY}" width="${mapW}" height="${mapH}" fill="${PAL.PANEL}" stroke="${PAL.BORDER}"/>`;
@@ -5912,7 +5941,7 @@ function buildAssetPlacementMapSVG(exportTheme){
   const legend=[['#1E8A5F','Demand center'],['#7A5195','Compression asset'],['#F2A900','Trailer placement']];
   legend.forEach(([color,label])=>{svg+=`<circle cx="${sbX+28}" cy="${sy-4}" r="7" fill="${color}" stroke="#fff"/><text x="${sbX+48}" y="${sy}" font-size="13" fill="${PAL.TEXT}">${label}</text>`;sy+=30;});
   sy+=14;svg+=`<text x="${sbX+20}" y="${sy}" font-size="13" font-weight="700" fill="${PAL.MUTED}">ASSUMPTIONS</text>`;sy+=30;
-  [`Response radius: ${fmt(S.assetPlacement.targetRadius,0)} mi`,`Max response time: ${fmt(S.assetPlacement.targetHours,1)} h`,`Safety stock: ${fmt(S.assetPlacement.safetyDays,1)} day(s)`].forEach(line=>{svg+=`<text x="${sbX+20}" y="${sy}" font-size="13" fill="${PAL.TEXT}">${esc(line)}</text>`;sy+=26;});
+  [`Response radius: ${fmt(S.assetPlacement.targetRadius,0)} mi`,`Max response time: ${fmt(S.assetPlacement.targetHours,1)} h`,`Safety stock: ${fmt(S.assetPlacement.safetyDays,1)} day(s)`,`Simultaneous outages: ${S.assetPlacement.maxNodesDownAll?'All selected nodes':`Up to ${S.assetPlacement.maxNodesDown} nodes`}`].forEach(line=>{svg+=`<text x="${sbX+20}" y="${sy}" font-size="13" fill="${PAL.TEXT}">${esc(line)}</text>`;sy+=26;});
   svg+=`<line x1="36" y1="${VBH-40}" x2="${VBW-36}" y2="${VBH-40}" stroke="${PAL.BORDER}"/><text x="36" y="${VBH-16}" font-size="11.5" fill="${PAL.MUTED}">Generated by HyWeave — ${new Date().toLocaleDateString()}</text><text x="${VBW-36}" y="${VBH-16}" font-size="11.5" fill="${PAL.MUTED}" text-anchor="end">Asset placement recommendation</text></svg>`;
   return svg;
 }
@@ -5928,20 +5957,21 @@ function buildAssetPlacementDetailPageSVG(exportTheme,label,assets,pageNumber=1,
     {main:a.nearestFacility?a.nearestFacility.name:'—',sub:a.nearestFacility?`${fmt(a.nearestFacilityDist,0)} mi away`:''},
     `${a.covered.length}`,`${fmt(a.coveredDemand)} ${S.params.unit}/day`,
     {main:`${fmt(a.avgDist,0)} mi (${fmtHours(a.avgHours)})`,sub:`max ${fmt(a.maxDist,0)} mi (${fmtHours(a.maxHours)})`},
-    a.capacitySufficient?'Sufficient':`Needs ${fmt(a.capacityDetail,0)}`,
+    {main:a.capacitySufficient?'Sufficient':`Needs ${fmt(a.capacityDetail,0)}`,sub:`Top ${a.simultaneousNodeCount} covered node(s)`},
   ]);
   const pageLabel=totalPages>1?` — Page ${pageNumber} of ${totalPages}`:'';
-  return buildTablePageSVG(exportTheme,`${label} Placement Plan`,`${assets.length} placement row(s) on this page · ${fmt(S.assetPlacement.targetRadius,0)}mi / ${fmt(S.assetPlacement.targetHours,1)}h target${pageLabel}`,columns,rows);
+  return buildTablePageSVG(exportTheme,`${label} Placement Plan`,`${assets.length} placement row(s) · ${fmt(S.assetPlacement.targetRadius,0)}mi / ${fmt(S.assetPlacement.targetHours,1)}h · ${S.assetPlacement.maxNodesDownAll?'all nodes':`up to ${S.assetPlacement.maxNodesDown} nodes`} down${pageLabel}`,columns,rows);
 }
 
 function exportAssetPlacementCsv(){
   if(!lastAssetPlacementComputed){alert('View Asset Placement Results first.');return;}
   const q=value=>`"${String(value==null?'':value).replace(/"/g,'""')}"`;
-  const rows=[['Category','Assigned Asset','Asset Type','Proposed Location','State','Latitude','Longitude','Nearest Facility','Nearest Facility Distance (mi)','DCs Covered','Covered DC Names','Coverage Demand','Avg Reach (mi)','Avg Reach Time','Max Reach (mi)','Max Reach Time','Available Capacity','Required Capacity','Capacity Status','Reach Status']];
+  const rows=[['Category','Assigned Asset','Asset Type','Proposed Location','State','Latitude','Longitude','Nearest Facility','Nearest Facility Distance (mi)','DCs Covered','Covered DC Names','Coverage Demand','Simultaneous Nodes Used','Simultaneous Node Names','Simultaneous Demand','Maximum Nodes Down Setting','Avg Reach (mi)','Avg Reach Time','Max Reach (mi)','Max Reach Time','Available Capacity','Required Capacity','Capacity Status','Reach Status']];
   const add=(category,a)=>rows.push([
     category,a.assetName,a.assetType,a.cityRef?a.cityRef.name:'Unnamed area',a.cityRef?a.cityRef.state:'',a.lat.toFixed(5),a.lon.toFixed(5),
     a.nearestFacility?a.nearestFacility.name:'',a.nearestFacility?fmt(a.nearestFacilityDist,1):'',a.covered.length,a.covered.map(n=>n.name).join('; '),
-    fmt(a.coveredDemand,1),fmt(a.avgDist,1),fmtHours(a.avgHours),fmt(a.maxDist,1),fmtHours(a.maxHours),
+    fmt(a.coveredDemand,1),a.simultaneousNodeCount,a.simultaneousNodes.map(n=>n.name).join('; '),fmt(a.simultaneousDemand,1),S.assetPlacement.maxNodesDownAll?'All selected nodes':S.assetPlacement.maxNodesDown,
+    fmt(a.avgDist,1),fmtHours(a.avgHours),fmt(a.maxDist,1),fmtHours(a.maxHours),
     fmt(a.assetCapacity,1),fmt(a.capacityDetail,1),a.capacitySufficient?'Sufficient':'Shortfall',
     a.maxDist<=S.assetPlacement.targetRadius&&a.maxHours<=S.assetPlacement.targetHours?'Within target':'Outside target',
   ]);
@@ -6290,9 +6320,16 @@ function attachHandlers(){
   if(pTargetRadius) pTargetRadius.addEventListener('input', (e)=>{ document.getElementById('pTargetRadiusVal').textContent = e.target.value+' mi'; });
   const pTargetHours = document.getElementById('pTargetHours');
   if(pTargetHours) pTargetHours.addEventListener('input', (e)=>{ document.getElementById('pTargetHoursVal').textContent = e.target.value+' h'; });
+  const pMaxNodesDown=document.getElementById('pMaxNodesDown');
+  if(pMaxNodesDown) pMaxNodesDown.addEventListener('input',(e)=>{
+    const max=parseInt(e.target.max,10);
+    const value=parseInt(e.target.value,10);
+    document.getElementById('pMaxNodesDownVal').textContent=value>=max?`All (${max})`:value;
+  });
   const assetRecTargetRadius = document.getElementById('assetRecTargetRadius');
   const assetRecTargetHours = document.getElementById('assetRecTargetHours');
   const assetRecSafetyDays = document.getElementById('assetRecSafetyDays');
+  const assetRecMaxNodesDown = document.getElementById('assetRecMaxNodesDown');
   if(assetRecTargetRadius) assetRecTargetRadius.addEventListener('input', (e)=>{
     document.getElementById('assetRecTargetRadiusVal').textContent=e.target.value+' mi';
   });
@@ -6302,20 +6339,28 @@ function attachHandlers(){
   if(assetRecSafetyDays) assetRecSafetyDays.addEventListener('input', (e)=>{
     document.getElementById('assetRecSafetyDaysVal').textContent=e.target.value+' days';
   });
+  if(assetRecMaxNodesDown) assetRecMaxNodesDown.addEventListener('input',(e)=>{
+    const max=parseInt(e.target.max,10);
+    const value=parseInt(e.target.value,10);
+    document.getElementById('assetRecMaxNodesDownVal').textContent=value>=max?`All (${max})`:value;
+  });
   const applyAssetRecommendationTargets=()=>{
-    if(!assetRecTargetRadius||!assetRecTargetHours||!assetRecSafetyDays) return;
+    if(!assetRecTargetRadius||!assetRecTargetHours||!assetRecSafetyDays||!assetRecMaxNodesDown) return;
     const targetRadius=parseFloat(assetRecTargetRadius.value);
     const targetHours=parseFloat(assetRecTargetHours.value);
     const safetyDays=parseFloat(assetRecSafetyDays.value);
-    if(!Number.isFinite(targetRadius)||!Number.isFinite(targetHours)||!Number.isFinite(safetyDays)) return;
+    const selectedNodes=parseInt(assetRecMaxNodesDown.value,10);
+    const availableNodes=parseInt(assetRecMaxNodesDown.max,10);
+    if(!Number.isFinite(targetRadius)||!Number.isFinite(targetHours)||!Number.isFinite(safetyDays)||!Number.isFinite(selectedNodes)) return;
     S.params.targetRadius=targetRadius;
     S.params.targetHours=targetHours;
     S.params.safetyDays=safetyDays;
-    S.assetPlacement={targetRadius,targetHours,safetyDays};
+    S.params.maxNodesDown=selectedNodes>=availableNodes?0:selectedNodes;
+    syncAssetPlacementTargets();
     lastAssetPlacementComputed=null;
     render();
   };
-  [assetRecTargetRadius,assetRecTargetHours,assetRecSafetyDays].filter(Boolean).forEach(el=>el.addEventListener('change',applyAssetRecommendationTargets));
+  [assetRecTargetRadius,assetRecTargetHours,assetRecSafetyDays,assetRecMaxNodesDown].filter(Boolean).forEach(el=>el.addEventListener('change',applyAssetRecommendationTargets));
   const pHycasRadius = document.getElementById('pHycasRadius');
   if(pHycasRadius) pHycasRadius.addEventListener('input', (e)=>{ document.getElementById('pHycasRadiusVal').textContent = e.target.value+' mi'; });
   const pHycasHours = document.getElementById('pHycasHours');
@@ -6588,18 +6633,29 @@ function attachHandlers(){
   const chkRealEstateOverlay = document.getElementById('chkRealEstateOverlay');
   if(chkRealEstateOverlay) chkRealEstateOverlay.addEventListener('change', (e)=>{ S.showRealEstateOverlay = e.target.checked; render(); });
 
+  const fAssetMaxNodesDown=document.getElementById('fAssetMaxNodesDown');
+  if(fAssetMaxNodesDown) fAssetMaxNodesDown.addEventListener('input',(e)=>{
+    const max=parseInt(e.target.max,10);
+    const value=parseInt(e.target.value,10);
+    document.getElementById('fAssetMaxNodesDownVal').textContent=value>=max?`All (${max})`:value;
+  });
+
   const btnRecalcAssets = document.getElementById('btnRecalcAssets');
   if(btnRecalcAssets) btnRecalcAssets.addEventListener('click', ()=>{
     const safetyDays = parseFloat(document.getElementById('fAssetSafetyDays').value);
     const targetRadius = parseFloat(document.getElementById('fAssetTargetRadius').value);
     const targetHours = parseFloat(document.getElementById('fAssetTargetHours').value);
+    const selectedNodes = parseInt(document.getElementById('fAssetMaxNodesDown').value,10);
+    const availableNodes = parseInt(document.getElementById('fAssetMaxNodesDown').max,10);
     if(isNaN(safetyDays)||safetyDays<=0){ alert('Enter a valid, positive safety-stock days value.'); return; }
     if(isNaN(targetRadius)||targetRadius<=0){ alert('Enter a valid target delivery radius.'); return; }
     if(isNaN(targetHours)||targetHours<=0){ alert('Enter a valid target response time.'); return; }
+    if(isNaN(selectedNodes)||selectedNodes<=0){ alert('Choose at least one simultaneous node outage.'); return; }
     S.params.safetyDays=safetyDays;
     S.params.targetRadius=targetRadius;
     S.params.targetHours=targetHours;
-    S.assetPlacement = { safetyDays, targetRadius, targetHours };
+    S.params.maxNodesDown=selectedNodes>=availableNodes?0:selectedNodes;
+    syncAssetPlacementTargets();
     lastAssetPlacementComputed=null;
     S.activeTab='asset-results';
     render();
@@ -6783,11 +6839,13 @@ function commitParamsForm(){
   S.params.safetyDays = parseFloat(document.getElementById('pSafety').value)||S.params.safetyDays;
   S.params.targetRadius = parseFloat(document.getElementById('pTargetRadius').value)||S.params.targetRadius;
   S.params.targetHours = parseFloat(document.getElementById('pTargetHours').value)||S.params.targetHours;
-  S.assetPlacement = {
-    safetyDays:S.params.safetyDays,
-    targetRadius:S.params.targetRadius,
-    targetHours:S.params.targetHours,
-  };
+  const pMaxNodesDownEl=document.getElementById('pMaxNodesDown');
+  if(pMaxNodesDownEl){
+    const selectedNodes=parseInt(pMaxNodesDownEl.value,10);
+    const availableNodes=parseInt(pMaxNodesDownEl.max,10);
+    if(Number.isFinite(selectedNodes)&&selectedNodes>0) S.params.maxNodesDown=selectedNodes>=availableNodes?0:selectedNodes;
+  }
+  syncAssetPlacementTargets();
   S.params.hycasRadius = parseFloat(document.getElementById('pHycasRadius').value)||S.params.hycasRadius;
   S.params.hycasHours = parseFloat(document.getElementById('pHycasHours').value)||S.params.hycasHours;
   S.params.hycasCapacity = parseFloat(document.getElementById('pHycasCapacity').value)||S.params.hycasCapacity;
@@ -6820,7 +6878,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,maxNodesDownAll:true}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
     lastScenario = null;
     lastMultiComparison = null;
     render();
@@ -6893,7 +6951,7 @@ function applyScenarioFile(file, onDone){
     try{
       const data = JSON.parse(ev.target.result);
       if(!Array.isArray(data.demand) || !Array.isArray(data.supply)) throw new Error('File does not look like a saved scenario (missing demand/supply arrays).');
-      const defaults = {trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false,};
+      const defaults = {trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false,};
       S.demand = data.demand.map(n=>({
         id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon),
         rate:parseFloat(n.rate), safetyDays:parseFloat(n.safetyDays)||defaults.safetyDays,
