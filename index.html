@@ -2142,12 +2142,31 @@ function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays){
   });
 }
 
+function syncAssetPlacementTargets(){
+  const positiveOr = (value, fallback)=>{
+    const n=Number(value);
+    return Number.isFinite(n)&&n>0?n:fallback;
+  };
+  const targets={
+    safetyDays:positiveOr(S.params.safetyDays,1.5),
+    targetRadius:positiveOr(S.params.targetRadius,250),
+    targetHours:positiveOr(S.params.targetHours,8),
+  };
+  // Input Parameters is the single source of truth. Keep the legacy object populated so
+  // saved scenarios and report/export code from earlier builds remain compatible.
+  S.params.safetyDays=targets.safetyDays;
+  S.params.targetRadius=targets.targetRadius;
+  S.params.targetHours=targets.targetHours;
+  S.assetPlacement={...targets};
+  return targets;
+}
+
 function computeAssetPlacement(){
   if(activeDemand().length===0) return {
     compression: { assets:[], achievedMaxDist:0, achievedMaxHours:0, withinTarget:true, anyCapacityShortfall:false },
     storage: { assets:[], achievedMaxDist:0, achievedMaxHours:0, withinTarget:true, anyCapacityShortfall:false },
   };
-  const ap = S.assetPlacement;
+  const ap = syncAssetPlacementTargets();
   const sourcing = computeSourcing();
   const baseRisk = computeBaseRisk(sourcing);
 
@@ -4422,7 +4441,7 @@ function renderScenarioTab(){
 
 /* ===================== RENDER: ASSET PLACEMENT TAB ===================== */
 function renderAssetPlacementTab(){
-  const ap = S.assetPlacement;
+  const ap = syncAssetPlacementTargets();
   const editingRaw = S.assets.find(a=>a.id===S.assetForm);
   const editing = editingRaw ? normalizedAssetGroup(editingRaw) : null;
 
@@ -4550,11 +4569,12 @@ let lastAssetPlacementComputed=null;
 function renderAssetPlacementRecommendationTab(){
   if(activeDemand().length===0) return `<div class="card"><div class="empty">Select demand nodes before generating an asset placement recommendation.</div></div>`;
   if(S.assets.length===0) return `<div class="card"><div class="empty">Add assets on the Asset Placement tab or drop an asset file into Input Parameters.</div></div>`;
+  const ap=syncAssetPlacementTargets();
   const result=computeAssetPlacement();
   lastAssetPlacementComputed=result;
   const all=[...result.compression.assets,...result.storage.assets];
   const shortfalls=all.filter(a=>!a.capacitySufficient).length;
-  const outside=all.filter(a=>a.maxDist>S.assetPlacement.targetRadius||a.maxHours>S.assetPlacement.targetHours).length;
+  const outside=all.filter(a=>a.maxDist>ap.targetRadius||a.maxHours>ap.targetHours).length;
   function section(label,r,capacityLabel){
     if(!r.assets.length) return '';
     return `<div class="card">
@@ -4572,6 +4592,30 @@ function renderAssetPlacementRecommendationTab(){
     </div>`;
   }
   return `
+    <div class="card">
+      <div class="flexbetween" style="align-items:flex-start;gap:16px">
+        <div>
+          <h2 style="margin-bottom:3px">Asset Placement Targets</h2>
+          <p class="desc" style="margin-bottom:0">These controls are synchronized with Input Parameters. Adjust a slider to test the recommendation against a different target.</p>
+        </div>
+        <span class="tag tag-low" style="white-space:nowrap">Synced with Input Parameters</span>
+      </div>
+      <div class="row3" style="margin-top:14px">
+        <div class="field">
+          <label>Delivery Radius: <span class="rangeval" id="assetRecTargetRadiusVal">${fmt(ap.targetRadius,0)} mi</span></label>
+          <input id="assetRecTargetRadius" type="range" min="25" max="600" step="25" value="${ap.targetRadius}">
+        </div>
+        <div class="field">
+          <label>Max Response Time: <span class="rangeval" id="assetRecTargetHoursVal">${fmt(ap.targetHours,1)} h</span></label>
+          <input id="assetRecTargetHours" type="range" min="0.5" max="24" step="0.5" value="${ap.targetHours}">
+        </div>
+        <div class="field">
+          <label>Safety Stock: <span class="rangeval" id="assetRecSafetyDaysVal">${fmt(ap.safetyDays,1)} days</span></label>
+          <input id="assetRecSafetyDays" type="range" min="0.5" max="10" step="0.5" value="${ap.safetyDays}">
+        </div>
+      </div>
+      <div class="note" style="margin-top:4px">The displayed value updates while you drag. The placement recommendation, reach checks, map radius, and capacity checks refresh when you release the slider.</div>
+    </div>
     ${calculationReadinessBanner()}
     <div class="kpirow">
       <div class="kpi"><div class="val">${result.compression.assets.length}</div><div class="lbl">Compression Placements</div></div>
@@ -4581,7 +4625,7 @@ function renderAssetPlacementRecommendationTab(){
     </div>
     <div class="card status-card ${!shortfalls&&!outside?'status-ok':''}">
       <b class="status-title">${!shortfalls&&!outside?'✓ Recommendation meets the configured targets':'⚠ Recommendation needs review'}</b>
-      &nbsp;—&nbsp; Based on ${assetInventoryCount()} imported/entered asset(s), ${fmt(S.assetPlacement.targetRadius,0)}mi / ${fmt(S.assetPlacement.targetHours,1)}h reach, and ${fmt(S.assetPlacement.safetyDays,1)} storage day(s).
+      &nbsp;—&nbsp; Based on ${assetInventoryCount()} imported/entered asset(s), ${fmt(ap.targetRadius,0)}mi / ${fmt(ap.targetHours,1)}h reach, and ${fmt(ap.safetyDays,1)} storage day(s).
     </div>
     <div class="card">
       <div class="flexbetween">
@@ -4608,7 +4652,7 @@ function renderAssetPlacementRecommendationTab(){
           <div class="item"><span class="swatch" style="background:#1E8A5F"></span>Demand center</div>
           <div class="item"><span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #7A5195;margin-right:6px"></span>Compression asset</div>
           <div class="item"><span class="swatch" style="background:#F2A900;border-radius:2px;transform:rotate(45deg)"></span>Trailer</div>
-          <div class="item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:1.3px dashed var(--muted);margin-right:6px"></span>Response radius (${fmt(S.assetPlacement.targetRadius,0)} mi)</div>
+          <div class="item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:1.3px dashed var(--muted);margin-right:6px"></span>Response radius (${fmt(ap.targetRadius,0)} mi)</div>
         </div>
         <div class="maptooltip" id="assetRecommendationTooltip"></div>
       </div>
@@ -6246,6 +6290,32 @@ function attachHandlers(){
   if(pTargetRadius) pTargetRadius.addEventListener('input', (e)=>{ document.getElementById('pTargetRadiusVal').textContent = e.target.value+' mi'; });
   const pTargetHours = document.getElementById('pTargetHours');
   if(pTargetHours) pTargetHours.addEventListener('input', (e)=>{ document.getElementById('pTargetHoursVal').textContent = e.target.value+' h'; });
+  const assetRecTargetRadius = document.getElementById('assetRecTargetRadius');
+  const assetRecTargetHours = document.getElementById('assetRecTargetHours');
+  const assetRecSafetyDays = document.getElementById('assetRecSafetyDays');
+  if(assetRecTargetRadius) assetRecTargetRadius.addEventListener('input', (e)=>{
+    document.getElementById('assetRecTargetRadiusVal').textContent=e.target.value+' mi';
+  });
+  if(assetRecTargetHours) assetRecTargetHours.addEventListener('input', (e)=>{
+    document.getElementById('assetRecTargetHoursVal').textContent=e.target.value+' h';
+  });
+  if(assetRecSafetyDays) assetRecSafetyDays.addEventListener('input', (e)=>{
+    document.getElementById('assetRecSafetyDaysVal').textContent=e.target.value+' days';
+  });
+  const applyAssetRecommendationTargets=()=>{
+    if(!assetRecTargetRadius||!assetRecTargetHours||!assetRecSafetyDays) return;
+    const targetRadius=parseFloat(assetRecTargetRadius.value);
+    const targetHours=parseFloat(assetRecTargetHours.value);
+    const safetyDays=parseFloat(assetRecSafetyDays.value);
+    if(!Number.isFinite(targetRadius)||!Number.isFinite(targetHours)||!Number.isFinite(safetyDays)) return;
+    S.params.targetRadius=targetRadius;
+    S.params.targetHours=targetHours;
+    S.params.safetyDays=safetyDays;
+    S.assetPlacement={targetRadius,targetHours,safetyDays};
+    lastAssetPlacementComputed=null;
+    render();
+  };
+  [assetRecTargetRadius,assetRecTargetHours,assetRecSafetyDays].filter(Boolean).forEach(el=>el.addEventListener('change',applyAssetRecommendationTargets));
   const pHycasRadius = document.getElementById('pHycasRadius');
   if(pHycasRadius) pHycasRadius.addEventListener('input', (e)=>{ document.getElementById('pHycasRadiusVal').textContent = e.target.value+' mi'; });
   const pHycasHours = document.getElementById('pHycasHours');
@@ -6526,7 +6596,11 @@ function attachHandlers(){
     if(isNaN(safetyDays)||safetyDays<=0){ alert('Enter a valid, positive safety-stock days value.'); return; }
     if(isNaN(targetRadius)||targetRadius<=0){ alert('Enter a valid target delivery radius.'); return; }
     if(isNaN(targetHours)||targetHours<=0){ alert('Enter a valid target response time.'); return; }
+    S.params.safetyDays=safetyDays;
+    S.params.targetRadius=targetRadius;
+    S.params.targetHours=targetHours;
     S.assetPlacement = { safetyDays, targetRadius, targetHours };
+    lastAssetPlacementComputed=null;
     S.activeTab='asset-results';
     render();
   });
@@ -6709,6 +6783,11 @@ function commitParamsForm(){
   S.params.safetyDays = parseFloat(document.getElementById('pSafety').value)||S.params.safetyDays;
   S.params.targetRadius = parseFloat(document.getElementById('pTargetRadius').value)||S.params.targetRadius;
   S.params.targetHours = parseFloat(document.getElementById('pTargetHours').value)||S.params.targetHours;
+  S.assetPlacement = {
+    safetyDays:S.params.safetyDays,
+    targetRadius:S.params.targetRadius,
+    targetHours:S.params.targetHours,
+  };
   S.params.hycasRadius = parseFloat(document.getElementById('pHycasRadius').value)||S.params.hycasRadius;
   S.params.hycasHours = parseFloat(document.getElementById('pHycasHours').value)||S.params.hycasHours;
   S.params.hycasCapacity = parseFloat(document.getElementById('pHycasCapacity').value)||S.params.hycasCapacity;
