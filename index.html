@@ -766,6 +766,7 @@ let S = {
   supplySavingsCandidateIds: [], supplySavingsExcludedSourceIds: [], supplySavingsNodeIds: [], supplySavingsDays: 365,
   supplySavingsUseExistingPriceOverride: false, supplySavingsExistingPriceOverride: null, notifyEmail: '',
   showTrailerRadius: true, showHycasRadius: true,
+  showAssignedDistanceOutliers: false, assignedDistanceThreshold: 250,
   assets: [], assetForm: null,
   realEstate: [], showRealEstateOverlay: true,
   aiChatOpen: false, aiChatMessages: [], aiChatBusy: false,
@@ -4251,6 +4252,9 @@ function renderResultsTab(){
     <div class="toolbar">
       <label class="maptogglelabel"><input type="checkbox" id="chkShowTrailerRadius" ${S.showTrailerRadius?'checked':''}> Show trailer delivery radius</label>
       <label class="maptogglelabel"><input type="checkbox" id="chkShowHycasRadius" ${S.showHycasRadius?'checked':''}> Show HyCAS response radius</label>
+      <label class="maptogglelabel"><input type="checkbox" id="chkShowAssignedDistanceOutliers" ${S.showAssignedDistanceOutliers?'checked':''}> Red-dot assigned source distance over</label>
+      <input id="fAssignedDistanceThreshold" type="number" min="1" step="1" value="${Number(S.assignedDistanceThreshold||S.params.targetRadius).toFixed(0)}" style="width:86px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:11.5px" aria-label="Assigned source distance threshold miles">
+      <span style="font-size:11.5px;color:var(--muted);font-weight:600">mi</span>
       ${hydrogenDataBadge()}
       ${publicHydrogenStatus==='error'?'<button class="btn btn-small btn-outline" id="btnRetryHydrogenData">Retry public H₂ data</button>':''}
     </div>
@@ -4266,6 +4270,7 @@ function renderResultsTab(){
         <div class="item"><span class="swatch" style="background:#C81E33"></span>High risk node</div>
         <div class="item"><span class="swatch" style="background:#B57500"></span>Medium risk node</div>
         <div class="item"><span class="swatch" style="background:#177A4C"></span>Low risk node</div>
+        ${S.showAssignedDistanceOutliers?`<div class="item"><span class="swatch" style="background:#E11D48"></span>Assigned source &gt; ${fmt(S.assignedDistanceThreshold||S.params.targetRadius,0)} mi</div>`:''}
         <div class="item"><span class="swatch" style="background:var(--blue);border-radius:2px"></span>${S.supply.some(isIhSupplySource)?'Other supply source':'Current supply source'}</div>
         ${S.supply.some(isIhSupplySource)?'<div class="item"><span style="display:inline-block;width:14px;margin-right:2px;color:#F2A900;font-size:16px;line-height:10px;text-align:center;text-shadow:0 0 1px #fff">★</span>IH supply source</div>':''}
         ${S.supply.some(s=>(s.status||'current')==='future')?`<div class="item"><span style="display:inline-block;width:10px;height:10px;border:1.3px dashed var(--blue);background:#5B9BD9;margin-right:6px;vertical-align:middle;border-radius:2px"></span>Future supply source</div>`:''}
@@ -5658,6 +5663,13 @@ function attachAssetRecommendationMapInteractions(){
   svg.addEventListener('pointercancel',finishDrag);
 }
 
+function assignedSourceDistanceOutlier(nodeId, sourcing){
+  if(!S.showAssignedDistanceOutliers) return false;
+  const threshold = Number(S.assignedDistanceThreshold)||S.params.targetRadius;
+  const primary = sourcing && sourcing.nodeSummary && sourcing.nodeSummary[nodeId] && sourcing.nodeSummary[nodeId].primary;
+  return !!(primary && Number.isFinite(Number(primary.dist)) && Number(primary.dist)>threshold);
+}
+
 function drawMap(){
   const svg = document.getElementById('mapsvg');
   if(!svg || !lastComputed) return;
@@ -5763,7 +5775,8 @@ function drawMap(){
     const [x,y]=p;
     const r = 4 + 8*Math.sqrt(n.rate/maxRate);
     const tier = risk[n.id].tier;
-    html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="${riskColor[tier]}" stroke="#fff" stroke-width="1.3" opacity="0.92" class="node-demand" data-id="${n.id}" style="cursor:pointer"/>`;
+    const distanceOutlier = assignedSourceDistanceOutlier(n.id, sourcing);
+    html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="${distanceOutlier?'#E11D48':riskColor[tier]}" stroke="#fff" stroke-width="${distanceOutlier?'2':'1.3'}" opacity="0.92" class="node-demand" data-id="${n.id}" style="cursor:pointer"/>`;
   });
 
   // Verified public hydrogen-fueling locations from NREL/AFDC. These are context markers only;
@@ -5794,6 +5807,7 @@ function drawMap(){
       const r = risk[n.id];
       const ns = sourcing.nodeSummary[n.id];
       const srcName = ns.primary? S.supply.find(s=>s.id===ns.primary.sourceId).name : 'None';
+      const distanceOutlier = assignedSourceDistanceOutlier(n.id, sourcing);
       const tierColor = {High:'#F2647A', Med:'#F2C46D', Low:'#5FCF9B'}[r.tier];
       const reasonsHtml = riskReasons(r).map(txt=>`&bull; ${esc(txt)}`).join('<br>');
       const viaLine = r.servicedVia==='source'
@@ -5802,6 +5816,7 @@ function drawMap(){
       showTooltip(evt, `<b>${esc(n.name)}</b><br><span class="mut">${esc(n.city||'')}</span><br>
         Consumption: ${fmt(n.rate)} ${S.params.unit}/day<br>
         Primary source: ${esc(srcName)} (${fmt(r.primaryDist,0)} mi)<br>
+        ${distanceOutlier?`<span style="color:#F2647A;font-weight:700">Assigned source exceeds ${fmt(Number(S.assignedDistanceThreshold)||S.params.targetRadius,0)} mi threshold</span><br>`:''}
         ${viaLine}<br>
         <span style="color:${tierColor};font-weight:700">Risk: ${r.tier}</span><br>
         <span class="mut" style="font-size:10.5px;line-height:1.5">${reasonsHtml}</span>`);
@@ -6015,7 +6030,8 @@ function buildPresentationSVG(exportTheme){
     const [x,y] = p;
     const r = 5.5 + 11*Math.sqrt(n.rate/maxRate);
     const tier = risk[n.id].tier;
-    svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="${riskColor[tier]}" stroke="#fff" stroke-width="1.6" opacity="0.94"/>`;
+    const distanceOutlier = assignedSourceDistanceOutlier(n.id, sourcing);
+    svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="${distanceOutlier?'#E11D48':riskColor[tier]}" stroke="#fff" stroke-width="${distanceOutlier?'2.4':'1.6'}" opacity="0.94"/>`;
   });
 
   svg += `</g>`; // end mapClip — nothing after this point is part of the clipped map layer
@@ -6030,6 +6046,7 @@ function buildPresentationSVG(exportTheme){
   const hasIH = S.supply.some(isIhSupplySource);
   const legendItems = [
     ['#C81E33','circle','High risk node'], ['#B57500','circle','Medium risk node'], ['#177A4C','circle','Low risk node'],
+    ...(S.showAssignedDistanceOutliers?[['#E11D48','circle',`Assigned source > ${fmt(Number(S.assignedDistanceThreshold)||S.params.targetRadius,0)} mi`]]:[]),
     ['#0071CE','square',hasIH?'Other supply source':'Current supply source'],
     ...(hasIH?[['#F2A900','star','IH supply source']]:[]),
     ['#F2A900','diamond','Proposed staging hub'],
@@ -6942,6 +6959,14 @@ function attachHandlers(){
   if(chkShowTrailerRadius) chkShowTrailerRadius.addEventListener('change', (e)=>{ S.showTrailerRadius = e.target.checked; render(); });
   const chkShowHycasRadius = document.getElementById('chkShowHycasRadius');
   if(chkShowHycasRadius) chkShowHycasRadius.addEventListener('change', (e)=>{ S.showHycasRadius = e.target.checked; render(); });
+  const chkShowAssignedDistanceOutliers = document.getElementById('chkShowAssignedDistanceOutliers');
+  if(chkShowAssignedDistanceOutliers) chkShowAssignedDistanceOutliers.addEventListener('change', (e)=>{ S.showAssignedDistanceOutliers = e.target.checked; render(); });
+  const fAssignedDistanceThreshold = document.getElementById('fAssignedDistanceThreshold');
+  if(fAssignedDistanceThreshold) fAssignedDistanceThreshold.addEventListener('change', (e)=>{
+    const miles = Number(e.target.value);
+    if(Number.isFinite(miles) && miles>0) S.assignedDistanceThreshold = miles;
+    render();
+  });
 
   /* PRICING_BLOCK_START */
   const btnDiscountTemplate = document.getElementById('btnDiscountTemplate');
@@ -7486,7 +7511,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,assetPlacementAtDemandNodes:false,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, demandRegionSelections:[], supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, supplySavingsCandidateIds:[], supplySavingsExcludedSourceIds:[], supplySavingsNodeIds:[], supplySavingsDays:365, supplySavingsUseExistingPriceOverride:false, supplySavingsExistingPriceOverride:null, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,maxNodesDownAll:true,constrainToDemandNodes:false}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,assetPlacementAtDemandNodes:false,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, demandRegionSelections:[], supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, supplySavingsCandidateIds:[], supplySavingsExcludedSourceIds:[], supplySavingsNodeIds:[], supplySavingsDays:365, supplySavingsUseExistingPriceOverride:false, supplySavingsExistingPriceOverride:null, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, showAssignedDistanceOutliers:false, assignedDistanceThreshold:250, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,maxNodesDownAll:true,constrainToDemandNodes:false}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
     lastScenario = null;
     lastMultiComparison = null;
     lastSupplySavings = null;
@@ -7504,6 +7529,12 @@ if(btnSaveScenarioTop) btnSaveScenarioTop.addEventListener('click', ()=>{
     supply: S.supply,
     params: S.params,
     distanceOverrides: S.distanceOverrides,
+    mapDisplay: {
+      showTrailerRadius: !!S.showTrailerRadius,
+      showHycasRadius: !!S.showHycasRadius,
+      showAssignedDistanceOutliers: !!S.showAssignedDistanceOutliers,
+      assignedDistanceThreshold: Number(S.assignedDistanceThreshold)||S.params.targetRadius,
+    },
     exportBranding: S.exportBranding,
     scenarioPlanning: {
       supplySavingsCandidateIds: S.supplySavingsCandidateIds||[],
@@ -7615,6 +7646,11 @@ function applyScenarioFile(file, onDone){
             nodeId:o.nodeId, sourceId:o.sourceId, distanceMiles:Number(o.distanceMiles), durationHours:Number(o.durationHours)
           }))
         : [];
+      const mapDisplay=data.mapDisplay&&typeof data.mapDisplay==='object'?data.mapDisplay:{};
+      S.showTrailerRadius=typeof mapDisplay.showTrailerRadius==='boolean'?mapDisplay.showTrailerRadius:true;
+      S.showHycasRadius=typeof mapDisplay.showHycasRadius==='boolean'?mapDisplay.showHycasRadius:true;
+      S.showAssignedDistanceOutliers=!!mapDisplay.showAssignedDistanceOutliers;
+      S.assignedDistanceThreshold=Number(mapDisplay.assignedDistanceThreshold)>0?Number(mapDisplay.assignedDistanceThreshold):S.params.targetRadius;
       if(data.exportBranding && typeof data.exportBranding==='object'){
         S.exportBranding = {
           companyLogo: typeof data.exportBranding.companyLogo==='string' ? data.exportBranding.companyLogo : null,
