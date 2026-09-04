@@ -524,6 +524,16 @@ function projectTo(lat, lon, proj){
   const [x,y] = albersXY(lat,lon);
   return [x*proj.scale+proj.offx, proj.VBH-(y*proj.scale+proj.offy)];
 }
+function isLower48Coordinate(lat, lon){
+  return Number.isFinite(lat) && Number.isFinite(lon) &&
+    lat >= 24 && lat <= 50.5 && lon >= -125.5 && lon <= -66;
+}
+function projectMapPoint(lat, lon, proj){
+  if(!isLower48Coordinate(lat, lon)) return null;
+  const [x,y] = projectTo(lat, lon, proj);
+  if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return [x,y];
+}
 // The live Optimization Results map uses a native 16:9 coordinate system. Re-fitting the
 // projection here (instead of stretching the older 960x600 SVG) preserves geography and keeps
 // the complete continental U.S. visible on widescreen displays.
@@ -5653,7 +5663,7 @@ function drawMap(){
   if(!svg || !lastComputed) return;
   const {sourcing, risk, hubs} = lastComputed;
   const mapProj=NETWORK_MAP_PROJ;
-  const mapXY=(lat,lon)=>projectTo(lat,lon,mapProj);
+  const mapXY=(lat,lon)=>projectMapPoint(lat,lon,mapProj);
   // State shapes/labels are baked as literal SVG attributes (not CSS-driven), so they need an
   // explicit light/dark palette rather than following the page theme automatically.
   const mapColors = THEME==='dark'
@@ -5673,7 +5683,9 @@ function drawMap(){
   sourcing.flows.forEach(f=>{
     const n = S.demand.find(x=>x.id===f.nodeId), s = S.supply.find(x=>x.id===f.sourceId);
     if(!n||!s) return;
-    const [x1,y1]=mapXY(n.lat,n.lon), [x2,y2]=mapXY(s.lat,s.lon);
+    const p1=mapXY(n.lat,n.lon), p2=mapXY(s.lat,s.lon);
+    if(!p1||!p2) return;
+    const [x1,y1]=p1, [x2,y2]=p2;
     const w = 0.5 + 2.2*(f.amt/maxAmt);
     html += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#8FA3BF" stroke-width="${w.toFixed(2)}" opacity="0.55"/>`;
   });
@@ -5687,12 +5699,16 @@ function drawMap(){
   const deliveryRadiusPx = deliveryRadiusMiles * kmPerMile * mapProj.scale;
   if(S.showTrailerRadius){
     hubs.forEach(h=>{
-      const [hx,hy] = mapXY(h.lat,h.lon);
+      const p=mapXY(h.lat,h.lon);
+      if(!p) return;
+      const [hx,hy] = p;
       html += `<circle cx="${hx.toFixed(1)}" cy="${hy.toFixed(1)}" r="${deliveryRadiusPx.toFixed(1)}" fill="#F2A900" fill-opacity="0.06" stroke="#F2A900" stroke-width="1.3" opacity="0.75"/>`;
     });
   }
   hubs.forEach(h=>{
-    const [hx,hy] = mapXY(h.lat,h.lon);
+    const p=mapXY(h.lat,h.lon);
+    if(!p) return;
+    const [hx,hy] = p;
     html += `<g transform="translate(${hx.toFixed(1)},${hy.toFixed(1)}) rotate(45)" class="node-hub" data-id="hub${h.idx}" style="cursor:pointer">
       <rect x="-6" y="-6" width="12" height="12" fill="#F2A900" stroke="#fff" stroke-width="1.3"/>
     </g>`;
@@ -5705,12 +5721,16 @@ function drawMap(){
   const hycasRadiusPx = S.params.hycasRadius * kmPerMile * mapProj.scale;
   if(S.showHycasRadius){
     hycasUnits.forEach(u=>{
-      const [ux,uy] = mapXY(u.lat,u.lon);
+      const p=mapXY(u.lat,u.lon);
+      if(!p) return;
+      const [ux,uy] = p;
       html += `<circle cx="${ux.toFixed(1)}" cy="${uy.toFixed(1)}" r="${hycasRadiusPx.toFixed(1)}" fill="#7A5195" fill-opacity="0.05" stroke="#7A5195" stroke-width="1.2" stroke-dasharray="5,3" opacity="0.7"/>`;
     });
   }
   hycasUnits.forEach(u=>{
-    const [ux,uy] = mapXY(u.lat,u.lon);
+    const p=mapXY(u.lat,u.lon);
+    if(!p) return;
+    const [ux,uy] = p;
     html += `<g transform="translate(${ux.toFixed(1)},${uy.toFixed(1)})" class="node-hycas" data-id="hycas${u.idx}" style="cursor:pointer">
       <polygon points="0,-8 7,5 -7,5" fill="#7A5195" stroke="#fff" stroke-width="1.3"/>
     </g>`;
@@ -5720,7 +5740,9 @@ function drawMap(){
   // ghosted (low opacity, hollow) when the Include Future toggle is off, so it's visually obvious
   // which sources actually fed this optimization run.
   S.supply.forEach(s=>{
-    const [x,y]=mapXY(s.lat,s.lon);
+    const p=mapXY(s.lat,s.lon);
+    if(!p) return;
+    const [x,y]=p;
     const isFuture = (s.status||'current')==='future';
     const isActive = supplySourceSelected(s);
     const isIH = isIhSupplySource(s);
@@ -5736,7 +5758,9 @@ function drawMap(){
   const maxRate = Math.max(1,...activeDemand().map(n=>n.rate));
   const riskColor = {High:'#C81E33', Med:'#B57500', Low:'#177A4C'};
   activeDemand().forEach(n=>{
-    const [x,y]=mapXY(n.lat,n.lon);
+    const p=mapXY(n.lat,n.lon);
+    if(!p || !risk[n.id]) return;
+    const [x,y]=p;
     const r = 4 + 8*Math.sqrt(n.rate/maxRate);
     const tier = risk[n.id].tier;
     html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="${riskColor[tier]}" stroke="#fff" stroke-width="1.3" opacity="0.92" class="node-demand" data-id="${n.id}" style="cursor:pointer"/>`;
@@ -5747,7 +5771,9 @@ function drawMap(){
   // a location with commercial capacity and cost assumptions.
   publicHydrogenStations.forEach(st=>{
     if(!Number.isFinite(st.latitude) || !Number.isFinite(st.longitude)) return;
-    const [x,y]=mapXY(st.latitude,st.longitude);
+    const p=mapXY(st.latitude,st.longitude);
+    if(!p) return;
+    const [x,y]=p;
     html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="#00A6A6" stroke="#FFFFFF" stroke-width="1" opacity="0.9" class="node-public-h2" data-id="${st.id}" style="cursor:pointer"/>`;
   });
 
@@ -5879,10 +5905,13 @@ function buildPresentationSVG(exportTheme){
   const NAVY=PAL.HEADING, BG=PAL.BG, BORDER=PAL.BORDER, MUTED=PAL.MUTED, TEXT=PAL.TEXT;
   const riskColor = {High:'#C81E33', Med:'#B57500', Low:'#177A4C'};
 
-  // Map viewport: left ~74% of width, between header and footer
-  const mapX=36, mapY=118, mapW=1372, mapH=884;
+  // Map viewport: full-width 16:9 report page between header and footer.
+  const mapX=36, mapY=118, mapW=1848, mapH=884;
   const mp = fitProjection(mapW, mapH, 0.94);
-  function toMap(lat,lon){ const [x,y]=projectTo(lat,lon,mp); return [x+mapX, y+mapY]; }
+  function toMap(lat,lon){
+    const p=projectMapPoint(lat,lon,mp);
+    return p ? [p[0]+mapX, p[1]+mapY] : null;
+  }
 
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${VBW}" height="${VBH}" viewBox="0 0 ${VBW} ${VBH}" font-family="Arial,Helvetica,sans-serif">`;
   svg += `<rect x="0" y="0" width="${VBW}" height="${VBH}" fill="${BG}"/>`;
@@ -5919,7 +5948,9 @@ function buildPresentationSVG(exportTheme){
   sourcing.flows.forEach(f=>{
     const n = S.demand.find(x=>x.id===f.nodeId), s = S.supply.find(x=>x.id===f.sourceId);
     if(!n||!s) return;
-    const [x1,y1]=toMap(n.lat,n.lon), [x2,y2]=toMap(s.lat,s.lon);
+    const p1=toMap(n.lat,n.lon), p2=toMap(s.lat,s.lon);
+    if(!p1||!p2) return;
+    const [x1,y1]=p1, [x2,y2]=p2;
     const w = 0.7 + 3.2*(f.amt/maxAmt);
     svg += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#8FA3BF" stroke-width="${w.toFixed(2)}" opacity="0.5"/>`;
   });
@@ -5930,12 +5961,16 @@ function buildPresentationSVG(exportTheme){
   const deliveryRadiusPx = S.params.targetRadius * kmPerMile * mp.scale;
   if(S.showTrailerRadius){
     hubs.forEach(h=>{
-      const [x,y] = toMap(h.lat,h.lon);
+      const p=toMap(h.lat,h.lon);
+      if(!p) return;
+      const [x,y] = p;
       svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${deliveryRadiusPx.toFixed(1)}" fill="#F2A900" fill-opacity="0.06" stroke="#F2A900" stroke-width="1.6" opacity="0.8"/>`;
     });
   }
   hubs.forEach(h=>{
-    const [x,y] = toMap(h.lat,h.lon);
+    const p=toMap(h.lat,h.lon);
+    if(!p) return;
+    const [x,y] = p;
     svg += `<g transform="translate(${x.toFixed(1)},${y.toFixed(1)}) rotate(45)"><rect x="-8" y="-8" width="16" height="16" fill="#F2A900" stroke="#fff" stroke-width="1.8"/></g>`;
   });
 
@@ -5943,18 +5978,24 @@ function buildPresentationSVG(exportTheme){
   const hycasRadiusPx = S.params.hycasRadius * kmPerMile * mp.scale;
   if(S.showHycasRadius){
     (hycasUnits||[]).forEach(u=>{
-      const [x,y] = toMap(u.lat,u.lon);
+      const p=toMap(u.lat,u.lon);
+      if(!p) return;
+      const [x,y] = p;
       svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${hycasRadiusPx.toFixed(1)}" fill="#7A5195" fill-opacity="0.05" stroke="#7A5195" stroke-width="1.4" stroke-dasharray="6,4" opacity="0.75"/>`;
     });
   }
   (hycasUnits||[]).forEach(u=>{
-    const [x,y] = toMap(u.lat,u.lon);
+    const p=toMap(u.lat,u.lon);
+    if(!p) return;
+    const [x,y] = p;
     svg += `<polygon points="${x.toFixed(1)},${(y-11).toFixed(1)} ${(x+9.5).toFixed(1)},${(y+7).toFixed(1)} ${(x-9.5).toFixed(1)},${(y+7).toFixed(1)}" fill="#7A5195" stroke="#fff" stroke-width="1.8"/>`;
   });
 
   // supply markers
   S.supply.forEach(s=>{
-    const [x,y] = toMap(s.lat,s.lon);
+    const p=toMap(s.lat,s.lon);
+    if(!p) return;
+    const [x,y] = p;
     const isFuture = (s.status||'current')==='future';
     const isActive = supplySourceSelected(s);
     const isIH = isIhSupplySource(s);
@@ -5969,7 +6010,9 @@ function buildPresentationSVG(exportTheme){
   // demand markers
   const maxRate = Math.max(1,...activeDemand().map(n=>n.rate));
   activeDemand().forEach(n=>{
-    const [x,y] = toMap(n.lat,n.lon);
+    const p=toMap(n.lat,n.lon);
+    if(!p || !risk[n.id]) return;
+    const [x,y] = p;
     const r = 5.5 + 11*Math.sqrt(n.rate/maxRate);
     const tier = risk[n.id].tier;
     svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="${riskColor[tier]}" stroke="#fff" stroke-width="1.6" opacity="0.94"/>`;
@@ -5977,12 +6020,12 @@ function buildPresentationSVG(exportTheme){
 
   svg += `</g>`; // end mapClip — nothing after this point is part of the clipped map layer
 
-  // ---- sidebar ----
-  const sbX = mapX+mapW+24, sbW = VBW-36-sbX;
-  svg += `<rect x="${sbX}" y="${mapY}" width="${sbW}" height="${mapH}" fill="${PAL.PANEL}" stroke="${BORDER}" stroke-width="1" rx="6"/>`;
-  let sy = mapY+34;
-  svg += `<text x="${sbX+18}" y="${sy}" font-size="12" font-weight="700" fill="${MUTED}">LEGEND</text>`;
-  sy += 30;
+  // ---- compact map legend, embedded inside lower-left corner so the map keeps the full page ----
+  const legendX = mapX+22, legendY = mapY+mapH-302, legendW = 300, legendH = 280;
+  svg += `<rect x="${legendX}" y="${legendY}" width="${legendW}" height="${legendH}" fill="${exportTheme==='dark'?'#171F2B':'#FFFFFF'}" stroke="${BORDER}" stroke-width="1" rx="8" opacity="0.94"/>`;
+  let sy = legendY+30;
+  svg += `<text x="${legendX+18}" y="${sy}" font-size="12" font-weight="700" fill="${MUTED}">LEGEND</text>`;
+  sy += 28;
   const hasFuture = S.supply.some(s=>(s.status||'current')==='future');
   const hasIH = S.supply.some(isIhSupplySource);
   const legendItems = [
@@ -5992,60 +6035,34 @@ function buildPresentationSVG(exportTheme){
     ['#F2A900','diamond','Proposed staging hub'],
   ];
   legendItems.forEach(([color,shape,label])=>{
-    const cx=sbX+26, cy=sy-4;
+    const cx=legendX+26, cy=sy-4;
     if(shape==='circle') svg += `<circle cx="${cx}" cy="${cy}" r="7" fill="${color}" stroke="#fff" stroke-width="1.2"/>`;
     else if(shape==='square') svg += `<rect x="${cx-6}" y="${cy-6}" width="12" height="12" fill="${color}"/>`;
     else if(shape==='star') svg += `<polygon points="${starPoints(cx,cy,8,3.6)}" fill="${color}" stroke="#fff" stroke-width="1.2"/>`;
     else svg += `<g transform="translate(${cx},${cy}) rotate(45)"><rect x="-6" y="-6" width="12" height="12" fill="${color}"/></g>`;
-    svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">${esc(label)}</text>`;
+    svg += `<text x="${legendX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">${esc(label)}</text>`;
     sy += 26;
   });
   if(hasFuture){
-    const cx=sbX+26, cy=sy-4;
+    const cx=legendX+26, cy=sy-4;
     const selectedFuture=S.supply.filter(s=>(s.status||'current')==='future'&&supplySourceSelected(s)).length;
     svg += `<rect x="${cx-6}" y="${cy-6}" width="12" height="12" fill="${selectedFuture?'#5B9BD9':PAL.MAPFILL}" stroke="#0071CE" stroke-width="1.3" stroke-dasharray="2,1.5" opacity="${selectedFuture?1:0.55}"/>`;
-    svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Future sources (${selectedFuture} selected)</text>`;
+    svg += `<text x="${legendX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Future sources (${selectedFuture} selected)</text>`;
     sy += 26;
   }
   if(S.showTrailerRadius){
-    svg += `<circle cx="${sbX+26}" cy="${sy-4}" r="7" fill="#F2A900" fill-opacity="0.08" stroke="#F2A900" stroke-width="1.3"/>`;
-    svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Delivery radius (${fmt(S.params.targetRadius,0)} mi)</text>`;
+    svg += `<circle cx="${legendX+26}" cy="${sy-4}" r="7" fill="#F2A900" fill-opacity="0.08" stroke="#F2A900" stroke-width="1.3"/>`;
+    svg += `<text x="${legendX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Delivery radius (${fmt(S.params.targetRadius,0)} mi)</text>`;
     sy += 26;
   }
-  svg += `<polygon points="${sbX+26},${sy-11} ${sbX+34},${sy+3} ${sbX+18},${sy+3}" fill="#7A5195" stroke="#fff" stroke-width="1.2"/>`;
-  svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Mobile HyCAS unit</text>`;
+  svg += `<polygon points="${legendX+26},${sy-11} ${legendX+34},${sy+3} ${legendX+18},${sy+3}" fill="#7A5195" stroke="#fff" stroke-width="1.2"/>`;
+  svg += `<text x="${legendX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">Mobile HyCAS unit</text>`;
   sy += 26;
   if(S.showHycasRadius){
-    svg += `<circle cx="${sbX+26}" cy="${sy-4}" r="7" fill="#7A5195" fill-opacity="0.06" stroke="#7A5195" stroke-width="1.3" stroke-dasharray="3,2"/>`;
-    svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">HyCAS response radius (${fmt(S.params.hycasRadius,0)} mi)</text>`;
+    svg += `<circle cx="${legendX+26}" cy="${sy-4}" r="7" fill="#7A5195" fill-opacity="0.06" stroke="#7A5195" stroke-width="1.3" stroke-dasharray="3,2"/>`;
+    svg += `<text x="${legendX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">HyCAS response radius (${fmt(S.params.hycasRadius,0)} mi)</text>`;
     sy += 26;
   }
-  sy += 8;
-  svg += `<line x1="${sbX+18}" y1="${sy}" x2="${sbX+sbW-18}" y2="${sy}" stroke="${BORDER}" stroke-width="1"/>`;
-  sy += 30;
-
-  svg += `<text x="${sbX+18}" y="${sy}" font-size="12" font-weight="700" fill="${MUTED}">NETWORK SUMMARY</text>`;
-  sy += 28;
-  const activeSupplyCount = activeSupply().length;
-  const futureCount = S.supply.filter(s=>(s.status||'current')==='future').length;
-  const selectedFutureCount = S.supply.filter(s=>(s.status||'current')==='future'&&supplySourceSelected(s)).length;
-  const summaryLines = [
-    ...(futureCount>0 ? [[`Scenario`, selectedFutureCount?`Selected current + future`:`Selected current only`]] : []),
-    ...(futureCount>0 ? [[`Active sources`, `${activeSupplyCount} of ${S.supply.length}`]] : []),
-    [`Total daily demand`, `${fmt(kpi.totalDemand)} ${S.params.unit}/day`],
-    [`One-time staging cost`, `${money(kpi.totalStagingCost,0)}`],
-    [`Avg landed cost`, `${money(kpi.avgCost)}/${S.params.unit}`],
-    [`Trailer trips/day`, `${kpi.totalDailyTrips}`],
-    [`High-risk nodes`, `${kpi.highRisk} of ${activeDemand().length}`],
-    [`Staging hubs`, `${hubs.length}`],
-    [`Staged trailers`, `${kpi.totalTrailers}`],
-    [`Mobile HyCAS units`, `${(hycasUnits||[]).length}`],
-  ];
-  summaryLines.forEach(([label,val])=>{
-    svg += `<text x="${sbX+18}" y="${sy}" font-size="12.5" fill="${MUTED}">${esc(label)}</text>`;
-    svg += `<text x="${sbX+sbW-18}" y="${sy}" font-size="12.5" font-weight="700" fill="${NAVY}" text-anchor="end">${esc(val)}</text>`;
-    sy += 24;
-  });
   // footer
   svg += `<line x1="36" y1="${VBH-40}" x2="${VBW-36}" y2="${VBH-40}" stroke="${BORDER}" stroke-width="1"/>`;
   svg += `<text x="36" y="${VBH-16}" font-size="11.5" fill="${MUTED}">Generated by HyWeave — ${new Date().toLocaleDateString()}</text>`;
@@ -6111,6 +6128,31 @@ function buildTablePageSVG(exportTheme, title, subtitle, columns, rows){
   svg += `<text x="${VBW-36}" y="${VBH-16}" font-size="11.5" fill="${MUTED}" text-anchor="end">${rows.length} row(s)</text>`;
   svg += `</svg>`;
   return svg;
+}
+
+function buildNetworkSummaryPageSVG(exportTheme){
+  const {sourcing, risk, hubs, kpi, hycasUnits} = lastComputed;
+  const activeSupplyCount = activeSupply().length;
+  const futureCount = S.supply.filter(s=>(s.status||'current')==='future').length;
+  const selectedFutureCount = S.supply.filter(s=>(s.status||'current')==='future'&&supplySourceSelected(s)).length;
+  const columns = [
+    {label:'Metric', widthFrac:0.36},
+    {label:'Value', widthFrac:0.24},
+    {label:'Basis', widthFrac:0.40},
+  ];
+  const rows = [
+    ...(futureCount>0 ? [['Scenario', selectedFutureCount?'Selected current + future':'Selected current only', `${activeSupplyCount} of ${S.supply.length} supply source(s) active`]] : []),
+    ['Total daily demand', `${fmt(kpi.totalDemand)} ${S.params.unit}/day`, `${activeDemand().length} selected demand node(s)`],
+    ['One-time staging cost', money(kpi.totalStagingCost,0), 'Trailer staging plus co-located mobile refueler staging where applicable'],
+    ['Average landed cost', `${money(kpi.avgCost)}/${S.params.unit}`, 'Sourcing plan cost divided by served demand'],
+    ['Trailer trips per day', `${kpi.totalDailyTrips}`, 'Full-trailer dispatch economics from the sourcing plan'],
+    ['High-risk nodes', `${kpi.highRisk} of ${activeDemand().length}`, 'Nodes outside configured distance/time guardrails or with unmet demand'],
+    ['Staging hubs', `${hubs.length}`, `${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h delivery guardrails`],
+    ['Staged trailers', `${kpi.totalTrailers}`, 'Recommended trailer assets for resiliency coverage'],
+    ['Mobile HyCAS units', `${(hycasUnits||[]).length}`, `${fmt(S.params.hycasRadius,0)}mi / ${fmt(S.params.hycasHours,1)}h response guardrails`],
+    ['Unmet demand', `${fmt(kpi.unmetTotal)} ${S.params.unit}/day`, kpi.unmetTotal>0?'Current selected supply capacity does not cover all demand':'All selected demand is serviceable by selected supply capacity'],
+  ];
+  return buildTablePageSVG(exportTheme,'Network Summary','Optimization run summary moved out of the map view so the map can use the full landscape page',columns,rows);
 }
 
 function buildHubDetailPageSVG(exportTheme, pageHubs=null, pageNumber=1, totalPages=1){
@@ -6325,6 +6367,7 @@ async function exportPresentationMap(){
   await new Promise(r=>setTimeout(r,350));
   try{
     const perPage=18, operationalPages=[];
+    operationalPages.push(await svgToJpegBytes(buildNetworkSummaryPageSVG(exportTheme),bg));
     const hubs=lastComputed.hubs||[], hubPageCount=Math.max(1,Math.ceil(hubs.length/perPage));
     for(let page=0;page<hubPageCount;page++){
       operationalPages.push(await svgToJpegBytes(buildHubDetailPageSVG(exportTheme,hubs.slice(page*perPage,(page+1)*perPage),page+1,hubPageCount),bg));
