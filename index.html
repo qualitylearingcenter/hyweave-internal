@@ -67,11 +67,21 @@
   .btn-outline{background:var(--btn-outline-bg);color:var(--heading);border:1px solid var(--border);}
   .btn-outline:hover{background:var(--btn-outline-hover);}
 
-  nav.tabs{display:flex;gap:2px;background:var(--panel);border-bottom:1px solid var(--border);padding:0 20px;flex-shrink:0;overflow-x:auto;}
-  nav.tabs button{background:none;border:none;padding:12px 16px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;}
+  nav.tabs{display:flex;align-items:stretch;gap:0;background:var(--panel);border-bottom:1px solid var(--border);padding:0 12px;flex-shrink:0;overflow-x:auto;}
+  nav.tabs .tab-group{display:flex;flex-direction:column;flex:0 0 auto;border-right:1px solid var(--border);padding:0 8px;}
+  nav.tabs .tab-group:last-child{border-right:none;}
+  nav.tabs .tab-group-label{padding:7px 12px 1px;text-align:center;font-size:9.5px;line-height:1.2;font-weight:800;letter-spacing:.65px;text-transform:uppercase;color:var(--grey);white-space:nowrap;}
+  nav.tabs .tab-group.active-group .tab-group-label{color:var(--blue);}
+  nav.tabs .tab-group-buttons{display:flex;align-items:stretch;gap:2px;}
+  nav.tabs button{background:none;border:none;padding:8px 14px 10px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;}
   nav.tabs button.active{color:var(--blue);border-bottom-color:var(--blue);}
   nav.tabs button .count{background:var(--hover);color:var(--muted);border-radius:10px;padding:1px 7px;font-size:10.5px;margin-left:6px;}
   nav.tabs button.active .count{background:var(--hover);color:var(--blue);}
+  @media(max-width:900px){
+    nav.tabs{padding:0 6px;}
+    nav.tabs .tab-group{padding:0 4px;}
+    nav.tabs button{padding-left:11px;padding-right:11px;}
+  }
 
   main{flex:1;overflow:auto;padding:20px 24px 40px;}
   .grid2{display:grid;grid-template-columns:340px minmax(0,1fr);gap:18px;align-items:start;}
@@ -112,6 +122,8 @@
   .maplegend{position:absolute;bottom:14px;left:14px;background:var(--legend-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:11px;box-shadow:0 2px 8px var(--shadow);color:var(--text);}
   .maplegend .item{display:flex;align-items:center;gap:6px;margin:3px 0;}
   .mapwrap{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+  .mapwrap.network-map-primary{width:100%;max-width:1440px;margin:0 auto;aspect-ratio:16/9;min-height:480px;background:var(--map-bg);}
+  .mapwrap.network-map-primary>svg{display:block;width:100%;height:100%;background:var(--map-bg);}
   .mapwrap.map-expanded{position:fixed;inset:14px;z-index:1000;max-width:none !important;margin:0 !important;border-radius:12px;box-shadow:0 20px 70px rgba(0,0,0,.55);background:var(--map-bg);display:flex;align-items:center;justify-content:center;}
   .mapwrap.map-expanded svg{width:100%;height:100%;cursor:grab;touch-action:none;}
   .mapwrap.map-expanded svg.map-panning{cursor:grabbing;}
@@ -119,6 +131,7 @@
   .map-controls .btn{min-width:34px;padding:6px 9px;}
   .map-expanded .maplegend{max-height:45%;overflow:auto;}
   body.map-modal-open{overflow:hidden;}
+  @media(max-width:900px){.mapwrap.network-map-primary{min-height:360px;aspect-ratio:4/3;}}
   .maptooltip{position:absolute;pointer-events:none;background:var(--tooltip-bg);color:var(--tooltip-text);padding:8px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;box-shadow:0 4px 14px rgba(0,0,0,.25);display:none;z-index:50;max-width:290px;}
   .maptooltip b{color:var(--tooltip-text);}
   .maptooltip .mut{color:var(--tooltip-muted);}
@@ -254,20 +267,35 @@
   </header>
   <nav class="tabs" id="tabs">
     <!-- PORTAL_BLOCK_START -->
-    <button data-tab="params" class="active">Input Parameters</button>
-    <button data-tab="supply">Supply Sources <span class="count" id="cntSupply">0</span></button>
-    <button data-tab="demand">Demand Nodes <span class="count" id="cntDemand">0</span></button>
-    <button data-tab="results">Optimization Results</button>
-    <button data-tab="assets">Asset Placement</button>
-    <button data-tab="asset-results">Asset Placement Recommendation</button>
+    <div class="tab-group active-group" data-tab-group="unconstrained">
+      <div class="tab-group-label">Unconstrained Modeling</div>
+      <div class="tab-group-buttons">
+        <button data-tab="params" class="active">Input Parameters</button>
+        <button data-tab="supply">Supply Sources <span class="count" id="cntSupply">0</span></button>
+        <button data-tab="demand">Demand Nodes <span class="count" id="cntDemand">0</span></button>
+        <button data-tab="results">Optimization Results</button>
+      </div>
+    </div>
+    <div class="tab-group" data-tab-group="constrained">
+      <div class="tab-group-label">Constrained Modeling</div>
+      <div class="tab-group-buttons">
+        <button data-tab="assets">Asset Placement</button>
+        <button data-tab="asset-results">Asset Placement Recommendation</button>
+      </div>
+    </div>
     <!-- PORTAL_BLOCK_END -->
-    <button data-tab="scenario" class="">Scenario Planning</button>
-    <!-- PRICING_BLOCK_START -->
-    <button data-tab="pricing">Pricing</button>
-    <!-- PRICING_BLOCK_END -->
-    <!-- PORTAL_BLOCK_START -->
-    <button data-tab="realestate">Real Estate Assets</button>
-    <!-- PORTAL_BLOCK_END -->
+    <div class="tab-group" data-tab-group="savings">
+      <div class="tab-group-label">Savings Modeling</div>
+      <div class="tab-group-buttons">
+        <button data-tab="scenario" class="">Scenario Planning</button>
+        <!-- PRICING_BLOCK_START -->
+        <button data-tab="pricing">Pricing</button>
+        <!-- PRICING_BLOCK_END -->
+        <!-- PORTAL_BLOCK_START -->
+        <button data-tab="realestate">Real Estate Assets</button>
+        <!-- PORTAL_BLOCK_END -->
+      </div>
+    </div>
   </nav>
   <main id="main"></main>
 </div>
@@ -496,6 +524,10 @@ function projectTo(lat, lon, proj){
   const [x,y] = albersXY(lat,lon);
   return [x*proj.scale+proj.offx, proj.VBH-(y*proj.scale+proj.offy)];
 }
+// The live Optimization Results map uses a native 16:9 coordinate system. Re-fitting the
+// projection here (instead of stretching the older 960x600 SVG) preserves geography and keeps
+// the complete continental U.S. visible on widescreen displays.
+const NETWORK_MAP_PROJ = fitProjection(1280, 720, 0.92);
 // Re-projects an already-built STATE_PATHS 'd' string (baked using the app's default PROJ) into
 // a different target projection, by algebraically inverting the original transform and reapplying
 // the new one — avoids needing to re-embed raw polygon coordinates for every export size.
@@ -514,6 +546,7 @@ function reprojectPathD(d, targetProj, dx, dy){
 }
 function fmt(n,d){ if(n===undefined||n===null||isNaN(n)) return '—'; return Number(n).toLocaleString(undefined,{minimumFractionDigits:d||0,maximumFractionDigits:d||0}); }
 function money(n,d){ if(n===undefined||n===null||isNaN(n)) return '—'; return '$'+fmt(n,d===undefined?2:d); }
+function signedMoney(n,d){ if(n===undefined||n===null||isNaN(n)) return '—'; return Number(n)<0?'-$'+fmt(Math.abs(Number(n)),d===undefined?2:d):money(n,d); }
 function esc(s){ return (s+'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 // A failed fetch to one of our own Netlify functions sometimes doesn't return OUR error text at
 // all -- if the function isn't deployed at that path, Netlify's own 404 page (a full HTML
@@ -575,11 +608,37 @@ function csvToObjects(text){
   });
 }
 function pick(o, keys){ for(const k of keys){ if(o[k]!==undefined && o[k]!=='') return o[k]; } return undefined; }
+function importedCompany(o){
+  return String(pick(o,['company','company name','company_name','customer','customer name','customer_name','organization','account'])||'').trim();
+}
+function normalizeDemandStatus(value){
+  const status=String(value||'current').toLowerCase().trim().replace(/[ _-]+/g,' ');
+  if(status==='future' || status==='planned') return 'future';
+  if(status==='brownfield' || status==='brown field') return 'brownfield';
+  return 'current';
+}
+function importedDemandStatus(o){
+  const brownfieldFlag=String(pick(o,['brownfield','is brownfield','is_brownfield'])||'').trim();
+  if(/^(y|yes|true|1|brownfield)$/i.test(brownfieldFlag)) return 'brownfield';
+  return normalizeDemandStatus(pick(o,['status','node status','node_status']));
+}
+function demandStatusGroup(node){ return normalizeDemandStatus(node&&node.status); }
+function companyGroups(records){
+  const groups=new Map();
+  records.forEach(record=>{
+    const label=String(record.company||'').trim();
+    if(!label) return;
+    const key=label.toLocaleLowerCase();
+    if(!groups.has(key)) groups.set(key,{key,label,records:[]});
+    groups.get(key).records.push(record);
+  });
+  return [...groups.values()].sort((a,b)=>naturalCompare(a.label,b.label));
+}
 
 function downloadTemplate(kind){
   let csv, filename;
   if(kind==='demand'){
-    csv = 'name,city,lat,lon,rate,safetyDays,status\nCurrent Plant,"Houston, TX",29.7604,-95.3698,500,3,current\nFuture Plant,"Phoenix, AZ",33.4484,-112.0740,350,3,future\n';
+    csv = 'name,company,city,lat,lon,rate,safetyDays,status\nCurrent Plant,Walmart,"Houston, TX",29.7604,-95.3698,500,3,current\nBrownfield DC,Walmart,"Dallas, TX",32.7767,-96.7970,250,3,brownfield\nFuture Plant,Home Depot,"Phoenix, AZ",33.4484,-112.0740,350,3,future\n';
     filename = 'demand_nodes_template.csv';
   } else if(kind==='asset'){
     csv = 'asset type,quantity,compression capacity,storage capacity\nHyCAS,2,1200,200\nTrailer,4,,1000\nTrailer,3,,750\nMobile Refueler,1,800,500\n';
@@ -598,7 +657,7 @@ function downloadTemplate(kind){
     csv = 'name,street address,city,state,postal code,acreage,description\n1108 - Marlboro, MA - 100 Cedar Hill Street,100 Cedar Hill Street,Marlboro,MA,01752,3.70,Office/Plant\n';
     filename = 'real_estate_properties_template.csv';
   } else {
-    csv = 'name,city,lat,lon,capacity,cost,status,high pressure capable,low pressure capable,wmt transfill\nExample Source,"Baytown, TX",29.7355,-94.9774,2000,2.10,current,yes,yes,no\nExample WMT Site,"Bentonville, AR",36.3729,-94.2088,800,15,current,yes,no,yes\n';
+    csv = 'name,company,city,lat,lon,capacity,cost,status,high pressure capable,low pressure capable,wmt transfill,ih supply source\nExample Source,Plug,"Baytown, TX",29.7355,-94.9774,2000,2.10,current,yes,yes,no,no\nExample IH Source,IH,"McIntosh, AL",31.2668,-88.0317,8000,18,current,yes,yes,no,yes\nExample WMT Site,Walmart,"Bentonville, AR",36.3729,-94.2088,800,15,current,yes,no,yes,no\n';
     filename = 'supply_sources_template.csv';
   }
   const blob = new Blob([csv], {type:'text/csv'});
@@ -610,7 +669,7 @@ function importDistanceOverridesCSV(file){
   reader.onload = (e)=>{
     let objs;
     try { objs = csvToObjects(e.target.result); } catch(err){ alert('Could not read CSV file: '+err.message); return; }
-    let added=0; const errors=[];
+    let added=0; const errors=[]; const addedIds=[];
     const norm = s => (s||'').trim().toLowerCase();
     objs.forEach((o,idx)=>{
       const nodeName = pick(o,['demand_node','demand node','node','node_name']);
@@ -644,22 +703,7 @@ function importDemandCSV(file){
   reader.onload = (e)=>{
     let objs;
     try { objs = csvToObjects(e.target.result); } catch(err){ alert('Could not read CSV file: '+err.message); return; }
-    let added=0; const errors=[];
-    objs.forEach((o,idx)=>{
-      const name = pick(o,['name','node name','node_name']);
-      const lat = parseFloat(pick(o,['lat','latitude']));
-      const lon = parseFloat(pick(o,['lon','lng','longitude']));
-      const rate = parseFloat(pick(o,['rate','consumption rate','consumption_rate']));
-      const safetyDaysRaw = pick(o,['safetydays','safety days','safety_days']);
-      const safetyDays = safetyDaysRaw!==undefined ? parseFloat(safetyDaysRaw) : S.params.safetyDays;
-      const city = pick(o,['city','location']) || '';
-      const status = String(pick(o,['status','node status','node_status'])||'current').toLowerCase().trim()==='future'?'future':'current';
-      if(!name || isNaN(lat) || isNaN(lon) || isNaN(rate)){
-        errors.push(`Row ${idx+2}: missing/invalid name, lat, lon, or rate`); return;
-      }
-      S.demand.push({id:uid(), name, city, lat, lon, rate, safetyDays: isNaN(safetyDays)?S.params.safetyDays:safetyDays, status, enabled:true});
-      added++;
-    });
+    const {added,errors}=addDemandRows(objs);
     render();
     alert(`Import complete: ${added} demand node(s) added.` + (errors.length?`\n\n${errors.length} row(s) skipped:\n`+errors.slice(0,10).join('\n')+(errors.length>10?`\n...and ${errors.length-10} more`:''):''));
   };
@@ -671,22 +715,7 @@ function importSupplyCSV(file){
   reader.onload = (e)=>{
     let objs;
     try { objs = csvToObjects(e.target.result); } catch(err){ alert('Could not read CSV file: '+err.message); return; }
-    let added=0; const errors=[];
-    objs.forEach((o,idx)=>{
-      const name = pick(o,['name','source name','source_name']);
-      const lat = parseFloat(pick(o,['lat','latitude']));
-      const lon = parseFloat(pick(o,['lon','lng','longitude']));
-      const capacity = parseFloat(pick(o,['capacity','fill capacity','fill_capacity']));
-      const cost = parseFloat(pick(o,['cost','unit cost','unit_cost']));
-      const city = pick(o,['city','location']) || '';
-      const statusRaw = (pick(o,['status'])||'current').toLowerCase().trim();
-      const status = statusRaw==='future'||statusRaw==='planned' ? 'future' : 'current';
-      if(!name || isNaN(lat) || isNaN(lon) || isNaN(capacity) || isNaN(cost)){
-        errors.push(`Row ${idx+2}: missing/invalid name, lat, lon, capacity, or cost`); return;
-      }
-      S.supply.push({id:uid(), name, city, lat, lon, capacity, cost, status});
-      added++;
-    });
+    const {added,errors}=addSupplyRows(objs);
     render();
     alert(`Import complete: ${added} supply source(s) added.` + (errors.length?`\n\n${errors.length} row(s) skipped:\n`+errors.slice(0,10).join('\n')+(errors.length>10?`\n...and ${errors.length-10} more`:''):''));
   };
@@ -717,18 +746,21 @@ function importAssetCSV(file){
 let S = {
   demand: [],
   supply: [],
-  params: { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage: true, hycasStorageCapacity: 50, hycasCoLocateTrailer: false, },
+  params: { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, assetPlacementAtDemandNodes:false, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage: true, hycasStorageCapacity: 50, hycasCoLocateTrailer: false, },
   activeTab: 'params',
   demandForm: null, // editing id or null
+  demandRegionSelections: [],
   supplyForm: null,
   scenarioSourceIds: [], scenarioNodeIds: [], scenarioDays: 3, scenarioTurnaround: 2, scenarioResiliency: true,
-  multiCompareSourceIds: [], multiCompareNodeIds: [], multiCompareDays: 1, multiComparePrices: {}, notifyEmail: '',
+  multiCompareSourceIds: [], multiCompareNodeIds: [], multiCompareDays: 1, multiComparePrices: {},
+  supplySavingsCandidateIds: [], supplySavingsExcludedSourceIds: [], supplySavingsNodeIds: [], supplySavingsDays: 365,
+  supplySavingsUseExistingPriceOverride: false, supplySavingsExistingPriceOverride: null, notifyEmail: '',
   showTrailerRadius: true, showHycasRadius: true,
   assets: [], assetForm: null,
   realEstate: [], showRealEstateOverlay: true,
   aiChatOpen: false, aiChatMessages: [], aiChatBusy: false,
   exportBranding: { companyLogo: null, companyLogoName: '', customerLogo: null, customerLogoName: '', customerName: '' },
-  assetPlacement: { safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, maxNodesDownAll:true },
+  assetPlacement: { safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, maxNodesDownAll:true, constrainToDemandNodes:false },
   distanceOverrides: [],
   pricing: { mode:'lease', trailerPrice: 1000000, hycasPrice: 3500000, nodePrice: 0,
              trailerLeaseRate: 22000, hycasLeaseRate: 73000, nodeLeaseRate: 0, leaseTermMonths: 60,
@@ -1024,6 +1056,8 @@ let roadDistanceStatus = 'unconfigured'; // 'unconfigured' | 'idle' | 'loading' 
 let roadDistanceError = '';
 let roadDistanceLastSignature = null;
 let roadDistanceProvider = '';
+let roadDistanceRevision = 0;
+let roadDistanceRefreshTimer = null;
 
 function networkSignature(){
   const d = activeDemand().map(n=>`${n.id}:${n.lat.toFixed(5)},${n.lon.toFixed(5)}`).join(';');
@@ -1047,12 +1081,13 @@ async function refreshRoadDistances(){
   if(!ROUTE_ENDPOINT_URL){ roadDistanceStatus = 'unconfigured'; return; }
   if(typeof fetch !== 'function'){ roadDistanceStatus = 'unconfigured'; roadDistanceError = 'fetch is not available in this environment'; return; }
   if(activeDemand().length===0 || activeSupply().length===0){ roadDistanceStatus = 'idle'; return; }
+  const demand = activeDemand();
+  const supply = activeSupply();
   const signature = networkSignature();
   if(signature===roadDistanceLastSignature && (roadDistanceStatus==='ready' || roadDistanceStatus==='error')) return; // nothing changed
   roadDistanceLastSignature = signature;
   roadDistanceStatus = 'loading';
   try{
-    const supply = activeSupply();
     const controller = new AbortController();
     // Nationwide HGV matrices routinely take longer than eight seconds. The former timeout
     // aborted valid OpenRouteService responses just before they completed.
@@ -1063,7 +1098,7 @@ async function refreshRoadDistances(){
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          origins: activeDemand().map(n=>[n.lon, n.lat]),
+          origins: demand.map(n=>[n.lon, n.lat]),
           destinations: supply.map(s=>[s.lon, s.lat]),
         }),
         signal: controller.signal,
@@ -1078,11 +1113,12 @@ async function refreshRoadDistances(){
     const data = await resp.json();
     roadDistanceProvider = data.provider || 'Road routing';
     roadDistanceCache = new Map();
-    activeDemand().forEach((n,i)=>{
+    demand.forEach((n,i)=>{
       supply.forEach((s,j)=>{
         roadDistanceCache.set(n.id+'|'+s.id, { distanceMiles: data.distancesMiles[i][j], durationHours: data.durationsHours[i][j] });
       });
     });
+    roadDistanceRevision++;
     roadDistanceStatus = 'ready';
     roadDistanceError = '';
   } catch(err){
@@ -1107,7 +1143,11 @@ function maybeRefreshRoadDistances(){
   if(roadDistanceStatus==='loading') return;
   if(activeDemand().length===0 || activeSupply().length===0) return;
   if(networkSignature()===roadDistanceLastSignature && (roadDistanceStatus==='ready' || roadDistanceStatus==='error')) return;
-  refreshRoadDistances();
+  if(roadDistanceRefreshTimer) clearTimeout(roadDistanceRefreshTimer);
+  roadDistanceRefreshTimer=setTimeout(()=>{
+    roadDistanceRefreshTimer=null;
+    refreshRoadDistances();
+  },300);
 }
 
 // ===================== Stage 2: real routing for Hub / HyCAS / Asset Placement REACH =====================
@@ -1288,6 +1328,7 @@ function applyTheme(theme){
 }
 
 function sampleData(){
+  S.demandRegionSelections = [];
   S.demand = [
     {id:uid(), name:'Pasadena Refinery Complex', city:'Pasadena, TX', lat:29.6911, lon:-95.2091, rate:850, safetyDays:3},
     {id:uid(), name:'Baytown Chemical Plant', city:'Baytown, TX', lat:29.7355, lon:-94.9774, rate:620, safetyDays:2},
@@ -1307,7 +1348,13 @@ function sampleData(){
     {id:uid(), name:'Oklahoma City Regional Fill', city:'Oklahoma City, OK', lat:35.4676, lon:-97.5164, capacity:700, cost:2.60, status:'current'},
     {id:uid(), name:'Planned Beaumont H2 Plant (2027)', city:'Beaumont, TX', lat:30.0802, lon:-94.1266, capacity:1500, cost:2.05, status:'future'},
   ];
-  S.params = { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage:true, hycasStorageCapacity:50, hycasCoLocateTrailer:false };
+  S.params = { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, assetPlacementAtDemandNodes:false, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage:true, hycasStorageCapacity:50, hycasCoLocateTrailer:false };
+  S.supplySavingsCandidateIds=[];
+  S.supplySavingsExcludedSourceIds=[];
+  S.supplySavingsNodeIds=[];
+  S.supplySavingsDays=365;
+  S.supplySavingsUseExistingPriceOverride=false;
+  S.supplySavingsExistingPriceOverride=null;
 }
 
 /* ===================== OPTIMIZATION ===================== */
@@ -1321,12 +1368,83 @@ function supplySourceSelected(s){
   return true;
 }
 
+// IH can be supplied explicitly by CSV/manual entry, while the name/company fallback keeps
+// existing files working (including both "IH" and "IH2" facility naming) without a re-import.
+function isIhSupplySource(source){
+  const identifyingText=`${source&&source.name||''} ${source&&source.company||''}`;
+  if(/\bIH2?\b/i.test(identifyingText)) return true;
+  return !!(source&&source.isIH===true);
+}
+
+function starPoints(cx,cy,outerRadius,innerRadius){
+  const points=[];
+  for(let i=0;i<10;i++){
+    const angle=-Math.PI/2+i*Math.PI/5;
+    const radius=i%2===0?outerRadius:innerRadius;
+    points.push(`${(cx+Math.cos(angle)*radius).toFixed(1)},${(cy+Math.sin(angle)*radius).toFixed(1)}`);
+  }
+  return points.join(' ');
+}
+
 function activeSupply(){
   return S.supply.filter(supplySourceSelected);
 }
 
 function demandNodeSelected(n){
   return n.enabled!==false;
+}
+
+const DEMAND_REGION_DEFS = [
+  {key:'north',label:'North'},
+  {key:'south',label:'South'},
+  {key:'east',label:'East'},
+  {key:'west',label:'West'},
+  {key:'ne',label:'NE'},
+  {key:'se',label:'SE'},
+  {key:'sw',label:'SW'},
+  {key:'nw',label:'NW'},
+  {key:'midwest',label:'Midwest'},
+  {key:'mid-atlantic',label:'Mid-Atlantic'},
+];
+
+function demandNodeStateCode(node){
+  const source=String(node.state||node.city||'').toUpperCase();
+  const validStates=new Set(STATE_LABELS.map(state=>state.abbr));
+  const tokens=source.match(/\b[A-Z]{2}\b/g)||[];
+  for(let i=tokens.length-1;i>=0;i--){
+    if(validStates.has(tokens[i])) return tokens[i];
+  }
+  // CSV imports often contain only a site name and coordinates. In that case, use the nearest
+  // state reference point so Midwest and Mid-Atlantic bulk selection still works.
+  const lat=Number(node.lat), lon=Number(node.lon);
+  if(!Number.isFinite(lat)||!Number.isFinite(lon)) return '';
+  let nearest='',nearestDistance=Infinity;
+  STATE_LABELS.forEach(state=>{
+    const distance=haversineMiles(lat,lon,state.lat,state.lon);
+    if(distance<nearestDistance){nearestDistance=distance;nearest=state.abbr;}
+  });
+  return nearest;
+}
+
+// Directional selectors are broad geographic shortcuts and intentionally overlap. Midwest and
+// Mid-Atlantic use familiar state groupings so those business regions remain useful even where
+// their coordinates also qualify for North/South/East/West or a quadrant.
+function demandNodeInRegion(node,regionKey){
+  const lat=Number(node.lat), lon=Number(node.lon);
+  const north=Number.isFinite(lat)&&lat>=39;
+  const east=Number.isFinite(lon)&&lon>=-90;
+  if(regionKey==='north') return north;
+  if(regionKey==='south') return Number.isFinite(lat)&&!north;
+  if(regionKey==='east') return east;
+  if(regionKey==='west') return Number.isFinite(lon)&&!east;
+  if(regionKey==='ne') return north&&east;
+  if(regionKey==='se') return Number.isFinite(lat)&&Number.isFinite(lon)&&!north&&east;
+  if(regionKey==='sw') return Number.isFinite(lat)&&Number.isFinite(lon)&&!north&&!east;
+  if(regionKey==='nw') return Number.isFinite(lat)&&Number.isFinite(lon)&&north&&!east;
+  const state=demandNodeStateCode(node);
+  if(regionKey==='midwest') return ['IL','IN','IA','KS','MI','MN','MO','NE','ND','OH','SD','WI'].includes(state);
+  if(regionKey==='mid-atlantic') return ['DC','DE','MD','NJ','NY','PA','VA','WV'].includes(state);
+  return false;
 }
 
 function activeDemand(){
@@ -1422,7 +1540,21 @@ function largestTrailerCapacity(){
   return Math.max(...activeTrailerTypes().map(t=>t.capacity));
 }
 
+let sourcingCacheKey = '';
+let sourcingCacheValue = null;
+function sourcingInputSignature(){
+  return JSON.stringify({
+    demand:activeDemand().map(n=>[n.id,n.lat,n.lon,n.rate]),
+    supply:activeSupply().map(s=>[s.id,s.lat,s.lon,s.capacity,s.cost]),
+    transport:[S.params.costPerMile,S.params.avgSpeed,S.params.trailerCap,S.params.trailerCapacities||[]],
+    overrides:(S.distanceOverrides||[]).map(o=>[o.nodeId,o.sourceId,o.distanceMiles,o.durationHours]),
+    roadDistanceRevision,
+  });
+}
+
 function computeSourcing(){
+  const cacheKey=sourcingInputSignature();
+  if(sourcingCacheValue && sourcingCacheKey===cacheKey) return sourcingCacheValue;
   const supply = activeSupply();
   const demand = activeDemand();
   const pairs = [];
@@ -1486,7 +1618,9 @@ function computeSourcing(){
   });
   const sourceUsage = {};
   supply.forEach(s=>{ sourceUsage[s.id] = s.capacity - remCap[s.id]; });
-  return { flows, nodeSummary, sourceUsage };
+  sourcingCacheKey=cacheKey;
+  sourcingCacheValue={ flows, nodeSummary, sourceUsage };
+  return sourcingCacheValue;
 }
 
 // Base risk: drives WHERE hubs get placed (sourcing vulnerability + consumption + shortfall).
@@ -1704,6 +1838,15 @@ function placementSitesFromCenters(centers){
   return centers.map(center=>{
     const [lat,lon]=albersInverse(center[0],center[1]);
     return resolvePlacementCenter(lat,lon);
+  });
+}
+
+// Asset Placement Recommendation deliberately preserves the mathematical centroid so its
+// unconstrained mode can be compared directly with demand-location-constrained placement.
+function placementCentroidSites(centers){
+  return centers.map(center=>{
+    const [lat,lon]=albersInverse(center[0],center[1]);
+    return {lat,lon,centroidLat:lat,centroidLon:lon,townResolved:false,townOffsetMiles:0,placementMode:'centroid'};
   });
 }
 
@@ -2080,15 +2223,52 @@ function expandedAssetsForPlacement(category){
 // Capacity is tested against the highest-consumption covered nodes up to the configured
 // simultaneous-outage limit. Compression uses their combined daily throughput; storage uses
 // that same combined demand multiplied by the safety-stock buffer.
-function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays, maxNodesDown){
+// When constrained placement is enabled, each geometric cluster is kept intact but its proposed
+// origin is moved onto the covered demand location that minimizes worst-case straight-line reach;
+// weighted average reach breaks ties. The selected point is then road-validated like every other
+// final placement origin.
+function constrainAssetSitesToDemandNodes(sites, assign, demand, baseRisk){
+  return sites.map((site,ci)=>{
+    const covered=demand.filter((n,i)=>assign[i]===ci);
+    if(!covered.length) return site;
+    const scored=covered.map(candidate=>{
+      const reaches=covered.map(n=>haversineMiles(candidate.lat,candidate.lon,n.lat,n.lon));
+      const maxDist=reaches.length?Math.max(...reaches):0;
+      let weightedDistance=0,weightTotal=0;
+      covered.forEach((n,i)=>{
+        const weight=Math.max((baseRisk[n.id]||{}).score||0,0.01);
+        weightedDistance+=reaches[i]*weight;
+        weightTotal+=weight;
+      });
+      return {candidate,maxDist,weightedAvg:weightTotal?weightedDistance/weightTotal:0};
+    }).sort((a,b)=>a.maxDist-b.maxDist||a.weightedAvg-b.weightedAvg||b.candidate.rate-a.candidate.rate);
+    const winner=scored[0].candidate;
+    const cityParts=String(winner.city||'').split(',').map(x=>x.trim()).filter(Boolean);
+    const fallback=nearestCityRef(winner.lat,winner.lon);
+    return {
+      ...site,
+      lat:winner.lat,
+      lon:winner.lon,
+      name:cityParts[0]||(fallback&&fallback.name)||winner.name,
+      state:cityParts.slice(1).join(', ')||(fallback&&fallback.state)||'',
+      townResolved:true,
+      townOffsetMiles:haversineMiles(site.centroidLat,site.centroidLon,winner.lat,winner.lon),
+      placementDemandNode:winner,
+      placementMode:'demand-node',
+    };
+  });
+}
+
+function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays, maxNodesDown, constrainToDemandNodes){
   const demand=activeDemand();
   if(demand.length===0 || assetList.length===0) return [];
   const k = Math.max(1, Math.min(assetList.length, demand.length));
   const pts = demand.map(n=>albersXY(n.lat,n.lon));
   const weights = demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
   const {centers} = weightedKMeans(pts, weights, k, 60);
-  const sites = placementSitesFromCenters(centers);
+  let sites = placementCentroidSites(centers);
   const assign = assignDemandToPlacementSites(sites);
+  if(constrainToDemandNodes) sites=constrainAssetSitesToDemandNodes(sites,assign,demand,baseRisk);
 
   const clusters = sites.map((site, ci)=>{
     const covered = demand.filter((n,i)=>assign[i]===ci);
@@ -2097,7 +2277,7 @@ function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays, 
     const cityRef = site.townResolved
       ? {name:site.name,state:site.state,dist:site.townOffsetMiles}
       : nearestCityRef(cLat,cLon);
-    const nearest = nearestExistingFacility(cLat,cLon);
+    const nearest = nearestExistingFacility(cLat,cLon,site.placementDemandNode?site.placementDemandNode.id:undefined);
     const nearestFacility=nearest.facility, bestD=nearest.dist;
 
     const dists = covered.map(n=> haversineMiles(n.lat,n.lon,cLat,cLon));
@@ -2115,6 +2295,8 @@ function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays, 
       lat:cLat, lon:cLon, centroidLat:site.centroidLat, centroidLon:site.centroidLon,
       townResolved:site.townResolved, townOffsetMiles:site.townOffsetMiles,
       cityRef, nearestFacility, nearestFacilityDist:bestD,
+      placementDemandNode:site.placementDemandNode||null,
+      placementMode:site.placementDemandNode?'demand-node':'centroid',
       covered, coveredDemand, avgDist, maxDist, avgHours: avgDist/S.params.avgSpeed, maxHours: maxDist/S.params.avgSpeed,
       maxNodeRate, simultaneousNodes, simultaneousDemand, simultaneousNodeCount:simultaneousNodes.length, need,
     };
@@ -2157,6 +2339,9 @@ function syncAssetPlacementTargets(){
     targetHours:positiveOr(S.params.targetHours,8),
     maxNodesDown,
     maxNodesDownAll,
+    constrainToDemandNodes:typeof S.params.assetPlacementAtDemandNodes==='boolean'
+      ? S.params.assetPlacementAtDemandNodes
+      : !!(S.assetPlacement&&S.assetPlacement.constrainToDemandNodes),
   };
   // Input Parameters is the single source of truth. Keep the legacy object populated so
   // saved scenarios and report/export code from earlier builds remain compatible.
@@ -2166,6 +2351,7 @@ function syncAssetPlacementTargets(){
   // Zero is the durable "all selected nodes" sentinel, so adding more demand nodes keeps the
   // assumption set to all instead of freezing it at the old node count.
   S.params.maxNodesDown=maxNodesDownAll?0:maxNodesDown;
+  S.params.assetPlacementAtDemandNodes=targets.constrainToDemandNodes;
   S.assetPlacement={...targets};
   return targets;
 }
@@ -2181,10 +2367,9 @@ function computeAssetPlacement(){
 
   function forType(type){
     const list = expandedAssetsForPlacement(type);
-    const assets = buildAssetPlacementForType(baseRisk, list, type, ap.safetyDays, ap.maxNodesDown);
+    const assets = buildAssetPlacementForType(baseRisk, list, type, ap.safetyDays, ap.maxNodesDown, ap.constrainToDemandNodes);
     // Asset Placement has no auto-search loop (the count is fixed by inventory), so real reach
     // can be applied directly to whatever the clustering+matching step produced.
-    maybeRefreshTownCenters(assets);
     applyPlacementReach(assets, a => ({lat:a.lat, lon:a.lon}));
     const achievedMaxDist = assets.length? Math.max(...assets.map(a=>a.maxDist)) : 0;
     const achievedMaxHours = assets.length? Math.max(...assets.map(a=>a.maxHours)) : 0;
@@ -2382,6 +2567,78 @@ function computeMultiSourceComparison(sourceIds,nodeIds,serviceDays){
     return a.allInCost-b.allInCost;
   });
   return {mode:'multi-direct',sources,nodes,serviceDays,results};
+}
+
+// Compares molecule, transportation, and all-in cost before and after one or more candidate supply sources are
+// added. Candidate sources are excluded from the baseline, then restored for the after-case.
+// Each demand node is assigned to its lowest-all-in-cost feasible lane in each case.
+function computeSupplyAdditionSavings(candidateSourceIds,excludedSourceIds,nodeIds,serviceDays,existingPriceOverride){
+  const candidateIdSet=new Set(candidateSourceIds||[]);
+  const excludedIdSet=new Set(excludedSourceIds||[]);
+  const nodeIdSet=new Set(nodeIds||[]);
+  const allSources=activeSupply();
+  const candidateSources=allSources.filter(source=>candidateIdSet.has(source.id));
+  const baselineSources=allSources.filter(source=>!candidateIdSet.has(source.id)&&!excludedIdSet.has(source.id));
+  const afterSources=[...baselineSources,...candidateSources.filter(source=>!baselineSources.some(existing=>existing.id===source.id))];
+  const excludedSources=allSources.filter(source=>excludedIdSet.has(source.id)&&!candidateIdSet.has(source.id));
+  const nodes=activeDemand().filter(node=>nodeIdSet.has(node.id));
+  const days=Number(serviceDays)||365;
+  const costPerMile=Number(S.params.costPerMile)||0;
+  const hasOverrideValue=existingPriceOverride!==null&&existingPriceOverride!==''&&Number.isFinite(Number(existingPriceOverride))&&Number(existingPriceOverride)>=0;
+  const overridePrice=hasOverrideValue?Number(existingPriceOverride):null;
+
+  function bestLane(node,sources){
+    const volume=node.rate*days;
+    const trailerPlan=trailerPlanForVolume(volume);
+    const options=sources.filter(source=>!isSelfServicePair(node,source)&&node.rate<=source.capacity).map(source=>{
+      const lane=nodeSourceDistance(node,source);
+      const transportationMiles=lane.dist*trailerPlan.count*2;
+      const transportationCost=transportationMiles*costPerMile;
+      const usesPriceOverride=overridePrice!==null&&!candidateIdSet.has(source.id);
+      const unitPrice=usesPriceOverride?overridePrice:(Number(source.cost)||0);
+      const moleculeCost=volume*unitPrice;
+      return {source,lane,trailerPlan,volume,transportationMiles,transportationCost,unitPrice,usesPriceOverride,moleculeCost,allInCost:transportationCost+moleculeCost};
+    }).sort((a,b)=>a.allInCost-b.allInCost||a.transportationCost-b.transportationCost||a.lane.dist-b.lane.dist||naturalCompare(a.source.name,b.source.name));
+    return options[0]||null;
+  }
+
+  const results=nodes.map(node=>{
+    const baseline=bestLane(node,baselineSources);
+    const withAddition=bestLane(node,afterSources);
+    const comparable=!!baseline&&!!withAddition;
+    const transportationSavings=comparable?baseline.transportationCost-withAddition.transportationCost:0;
+    const moleculeSavings=comparable?baseline.moleculeCost-withAddition.moleculeCost:0;
+    const allInSavings=comparable?baseline.allInCost-withAddition.allInCost:0;
+    const milesSaved=comparable?baseline.transportationMiles-withAddition.transportationMiles:0;
+    const candidateUsed=!!withAddition&&candidateIdSet.has(withAddition.source.id);
+    return {node,baseline,withAddition,comparable,transportationSavings,moleculeSavings,allInSavings,milesSaved,candidateUsed};
+  }).sort((a,b)=>b.allInSavings-a.allInSavings||naturalCompare(a.node.name,b.node.name));
+
+  const comparableResults=results.filter(result=>result.comparable);
+  const baselineMiles=comparableResults.reduce((sum,result)=>sum+result.baseline.transportationMiles,0);
+  const withAdditionMiles=comparableResults.reduce((sum,result)=>sum+result.withAddition.transportationMiles,0);
+  const baselineCost=comparableResults.reduce((sum,result)=>sum+result.baseline.transportationCost,0);
+  const withAdditionCost=comparableResults.reduce((sum,result)=>sum+result.withAddition.transportationCost,0);
+  const baselineMoleculeCost=comparableResults.reduce((sum,result)=>sum+result.baseline.moleculeCost,0);
+  const withAdditionMoleculeCost=comparableResults.reduce((sum,result)=>sum+result.withAddition.moleculeCost,0);
+  const baselineAllInCost=comparableResults.reduce((sum,result)=>sum+result.baseline.allInCost,0);
+  const withAdditionAllInCost=comparableResults.reduce((sum,result)=>sum+result.withAddition.allInCost,0);
+  const transportationSavings=baselineCost-withAdditionCost;
+  const moleculeSavings=baselineMoleculeCost-withAdditionMoleculeCost;
+  const allInSavings=baselineAllInCost-withAdditionAllInCost;
+  return {
+    mode:'supply-addition-savings',candidateSources,excludedSources,baselineSources,afterSources,nodes,serviceDays:days,costPerMile,existingPriceOverride:overridePrice,results,
+    comparableNodeCount:comparableResults.length,newlyServiceableCount:results.filter(result=>!result.baseline&&result.withAddition).length,
+    nodesUsingCandidate:results.filter(result=>result.candidateUsed).length,
+    baselineMiles,withAdditionMiles,milesSaved:baselineMiles-withAdditionMiles,
+    baselineCost,withAdditionCost,transportationSavings,
+    baselineMoleculeCost,withAdditionMoleculeCost,moleculeSavings,
+    baselineAllInCost,withAdditionAllInCost,allInSavings,
+    savingsPercent:baselineAllInCost>0?allInSavings/baselineAllInCost*100:0,
+    annualizedTransportationSavings:transportationSavings*(365/days),
+    annualizedMoleculeSavings:moleculeSavings*(365/days),
+    annualizedSavings:allInSavings*(365/days),
+  };
 }
 
 // Builds the four scenario cost blocks and the exact mileage-leg audit trail behind them.
@@ -2889,14 +3146,14 @@ function addDemandRows(objs){
     const rate=parseFloat(pick(o,['rate','consumption rate','consumption_rate']));
     const raw=pick(o,['safetydays','safety days','safety_days']);
     const safetyDays=raw!==undefined?parseFloat(raw):S.params.safetyDays;
-    const status=String(pick(o,['status','node status','node_status'])||'current').toLowerCase().trim()==='future'?'future':'current';
+    const status=importedDemandStatus(o);
     if(!name||isNaN(lat)||isNaN(lon)||isNaN(rate)){ errors.push(`row ${idx+2}`); return; }
-    S.demand.push({id:uid(),name,city:pick(o,['city','location'])||'',lat,lon,rate,safetyDays:isNaN(safetyDays)?S.params.safetyDays:safetyDays,status,enabled:true}); added++;
+    S.demand.push({id:uid(),name,company:importedCompany(o),city:pick(o,['city','location'])||'',lat,lon,rate,safetyDays:isNaN(safetyDays)?S.params.safetyDays:safetyDays,status,enabled:true}); added++;
   });
   return {added,errors};
 }
 function addSupplyRows(objs){
-  let added=0; const errors=[];
+  let added=0; const errors=[]; const addedIds=[];
   objs.forEach((o,idx)=>{
     const name=pick(o,['name','source name','source_name']);
     const lat=parseFloat(pick(o,['lat','latitude'])), lon=parseFloat(pick(o,['lon','lng','longitude']));
@@ -2912,8 +3169,13 @@ function addSupplyRows(objs){
     // Unlike pressure capability, this defaults to false for older/plain files -- a source
     // shouldn't silently become "customer-owned" just because the column wasn't there.
     const isWmtTransfill = /^(y|yes|true|1|wmt|wmt transfill)$/i.test(String(pick(o,['wmt transfill','wmt_transfill','category','source category'])||'').trim());
-    S.supply.push({id:uid(),name,city:pick(o,['city','location'])||'',lat,lon,capacity,cost,status:raw==='future'||raw==='planned'?'future':'current',highPressureCapable,lowPressureCapable,isWmtTransfill}); added++;
+    const ihRaw=pick(o,['ih supply source','ih_supply_source','ih source','ih']);
+    const isIH=ihRaw===undefined||String(ihRaw).trim()==='' ? undefined : /^(y|yes|true|1|ih|ih2|ih source)$/i.test(String(ihRaw).trim());
+    const id=uid();
+    S.supply.push({id,name,company:importedCompany(o),city:pick(o,['city','location'])||'',lat,lon,capacity,cost,status:raw==='future'||raw==='planned'?'future':'current',highPressureCapable,lowPressureCapable,isWmtTransfill,isIH});
+    addedIds.push(id); added++;
   });
+  S.supplySavingsCandidateIds=Array.from(new Set([...(S.supplySavingsCandidateIds||[]),...addedIds]));
   return {added,errors};
 }
 function addAssetRows(objs){
@@ -3007,7 +3269,9 @@ function renderAiChatPanel(){
 function render(){
   const aiChatPanelEl = document.getElementById('aiChatPanel');
   if(aiChatPanelEl) aiChatPanelEl.innerHTML = renderAiChatPanel();
-  maybeRefreshRoadDistances();
+  // Editing, filtering, and navigation should remain instant even with large CSVs. The full
+  // demand-by-supply routing matrix is only needed on tabs that actually calculate results.
+  if(['results','scenario','pricing','asset-results'].includes(S.activeTab)) maybeRefreshRoadDistances();
   if(S.activeTab==='results' && publicHydrogenStatus==='idle') refreshPublicHydrogenStations();
   const cntDemandEl = document.getElementById('cntDemand');
   if(cntDemandEl) cntDemandEl.textContent = S.demand.length;
@@ -3015,6 +3279,9 @@ function render(){
   if(cntSupplyEl) cntSupplyEl.textContent = S.supply.length;
   document.querySelectorAll('nav.tabs button').forEach(b=>{
     b.classList.toggle('active', b.dataset.tab===S.activeTab);
+  });
+  document.querySelectorAll('nav.tabs .tab-group').forEach(group=>{
+    group.classList.toggle('active-group', !!group.querySelector('button.active'));
   });
   const main = document.getElementById('main');
   if(S.activeTab==='demand') main.innerHTML = renderDemandTab();
@@ -3034,17 +3301,20 @@ function render(){
 /* ===================== RENDER: DEMAND TAB ===================== */
 function renderDemandTab(){
   const editing = S.demand.find(n=>n.id===S.demandForm);
-  const editStatus=editing?(editing.status||'current'):'current';
-  const current=S.demand.filter(n=>(n.status||'current')!=='future').sort((a,b)=>naturalCompare(a.name,b.name));
-  const future=S.demand.filter(n=>(n.status||'current')==='future').sort((a,b)=>naturalCompare(a.name,b.name));
+  const editStatus=editing?demandStatusGroup(editing):'current';
+  const current=S.demand.filter(n=>demandStatusGroup(n)==='current').sort((a,b)=>naturalCompare(a.name,b.name));
+  const brownfield=S.demand.filter(n=>demandStatusGroup(n)==='brownfield').sort((a,b)=>naturalCompare(a.name,b.name));
+  const future=S.demand.filter(n=>demandStatusGroup(n)==='future').sort((a,b)=>naturalCompare(a.name,b.name));
+  const demandCompanies=companyGroups(S.demand);
 
   function demandRows(list,group){
     if(list.length===0) return '<div class="empty">None yet.</div>';
-    return `<table><thead><tr><th style="width:42px;text-align:center">Use</th><th>Name</th><th>Location</th><th>Rate (${S.params.unit}/day)</th><th>Safety Days</th><th></th></tr></thead>
+    return `<table><thead><tr><th style="width:42px;text-align:center">Use</th><th>Name</th><th>Company</th><th>Location</th><th>Rate (${S.params.unit}/day)</th><th>Safety Days</th><th></th></tr></thead>
       <tbody>${list.map(n=>`
         <tr>
           <td style="text-align:center"><input type="checkbox" class="demand-node-check" data-toggle-demand="${n.id}" data-demand-group="${group}" ${demandNodeSelected(n)?'checked':''} aria-label="Use ${esc(n.name)} in optimization" style="width:17px;height:17px;cursor:pointer"></td>
           <td><b>${esc(n.name)}</b></td>
+          <td>${n.company?esc(n.company):'<span style="color:var(--muted)">—</span>'}</td>
           <td>${esc(n.city||'')} <span style="color:#AAB2BD">(${n.lat.toFixed(2)}, ${n.lon.toFixed(2)})</span></td>
           <td>${fmt(n.rate)}</td>
           <td>${n.safetyDays}</td>
@@ -3061,6 +3331,22 @@ function renderDemandTab(){
       Select all (${selected}/${list.length})
     </label>`;
   }
+  function regionToggle(region){
+    const list=S.demand.filter(n=>demandNodeInRegion(n,region.key));
+    const selected=list.filter(demandNodeSelected).length;
+    const active=(S.demandRegionSelections||[]).includes(region.key);
+    return `<label title="Select or clear every demand node in ${esc(region.label)}" style="display:flex;align-items:center;gap:8px;border:1px solid ${active?'var(--green)':'var(--border)'};border-radius:8px;padding:9px 10px;background:var(--note-bg);font-size:12px;font-weight:600;color:${active?'var(--green)':'var(--muted)'};cursor:${list.length?'pointer':'default'}">
+      <input type="checkbox" class="demand-region-check" data-demand-region-toggle="${region.key}" data-total="${list.length}" ${active?'checked':''} ${list.length?'':'disabled'} style="width:17px;height:17px;cursor:${list.length?'pointer':'default'};flex:0 0 auto">
+      <span>${esc(region.label)} <span style="font-weight:500;color:var(--muted)">(${selected}/${list.length})</span></span>
+    </label>`;
+  }
+  function companyToggle(group){
+    const selected=group.records.filter(demandNodeSelected).length;
+    return `<label title="Include or exclude all ${esc(group.label)} demand nodes" style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:8px;padding:9px 10px;background:var(--note-bg);font-size:12px;font-weight:600;color:${selected?'var(--green)':'var(--muted)'};cursor:pointer">
+      <input type="checkbox" class="demand-company-check" data-demand-company="${encodeURIComponent(group.key)}" data-selected="${selected}" data-total="${group.records.length}" ${selected===group.records.length?'checked':''} style="width:17px;height:17px;cursor:pointer;flex:0 0 auto">
+      <span>${esc(group.label)} <span style="font-weight:500;color:var(--muted)">(${selected}/${group.records.length})</span></span>
+    </label>`;
+  }
 
   return `
   <div class="grid2">
@@ -3069,6 +3355,7 @@ function renderDemandTab(){
         <h2>${editing?'Edit Demand Node':'Add Demand Node'}</h2>
         <p class="desc">A location that consumes industrial gas (plant, fueling station, facility).</p>
         <div class="field"><label>Node Name</label><input id="fName" placeholder="e.g. Pasadena Refinery" value="${editing?esc(editing.name):''}"></div>
+        <div class="field"><label>Company</label><input id="fCompany" placeholder="e.g. Walmart, Plug, Home Depot" value="${editing?esc(editing.company||''):''}"></div>
         <div class="field searchwrap">
           <label>City / Location search</label>
           <input id="fCity" placeholder="Type a city..." autocomplete="off" value="${editing?esc(editing.city):''}">
@@ -3086,6 +3373,7 @@ function renderDemandTab(){
           <label>Node Status</label>
           <select id="fDemandStatus">
             <option value="current" ${editStatus==='current'?'selected':''}>Current — operational today</option>
+            <option value="brownfield" ${editStatus==='brownfield'?'selected':''}>Brownfield — existing Walmart location</option>
             <option value="future" ${editStatus==='future'?'selected':''}>Future — planned / not yet active</option>
           </select>
         </div>
@@ -3097,12 +3385,33 @@ function renderDemandTab(){
     </div>
     <div>
       <div class="card">
+        <h2 style="margin-bottom:4px">Select Demand Nodes by Company</h2>
+        <p class="desc">Company checkboxes are created automatically from the optional <b>Company</b> column in the Demand CSV. Uncheck a company to exclude all of its demand locations.</p>
+        ${demandCompanies.length?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px">${demandCompanies.map(companyToggle).join('')}</div>`:'<div class="empty" style="padding:16px">No company names loaded yet. Add them manually or populate the Company column in the Demand CSV.</div>'}
+      </div>
+      <div class="card">
+        <h2 style="margin-bottom:4px">Select Demand Nodes by Region</h2>
+        <p class="desc">Each regional checkbox operates independently. Selecting one region will not visually activate another region, even where their location sets overlap.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
+          ${DEMAND_REGION_DEFS.map(regionToggle).join('')}
+        </div>
+        <div class="note" style="margin-top:10px">North/South divide at 39°N; East/West divide at 90°W. NE, SE, SW, and NW combine those boundaries. Midwest and Mid-Atlantic use state-based groupings.</div>
+      </div>
+      <div class="card">
         <div class="flexbetween">
           <h2 style="margin-bottom:0">Current Demand Nodes (${current.length})</h2>
           ${groupToggle(current,'current')}
         </div>
         <p class="desc">Operational demand locations. Select individual nodes or use Select all for the complete group.</p>
         ${demandRows(current,'current')}
+      </div>
+      <div class="card" style="border-color:${brownfield.some(demandNodeSelected)?'var(--amber)':'var(--border)'}">
+        <div class="flexbetween">
+          <h2 style="margin-bottom:0">Brownfield Demand Nodes (${brownfield.length})</h2>
+          ${groupToggle(brownfield,'brownfield')}
+        </div>
+        <p class="desc">Existing Walmart brownfield locations. Select individual nodes or use Select all to include the complete brownfield group.</p>
+        ${demandRows(brownfield,'brownfield')}
       </div>
       <div class="card" style="border-color:${future.some(demandNodeSelected)?'#CDE9DC':'var(--border)'}">
         <div class="flexbetween">
@@ -3126,8 +3435,12 @@ function pressureLaneDiagnostics(){
   const active = activeSupply();
   const hpCount = active.filter(s=>s.highPressureCapable!==false).length;
   const lpCount = active.filter(s=>s.lowPressureCapable!==false).length;
-  if(activeDemand().length===0 || active.length===0) return {hpCount, lpCount, total:active.length, longLanes:[]};
-  const sourcing = computeSourcing();
+  const currentKey=sourcingInputSignature();
+  const laneAnalysisAvailable=!!sourcingCacheValue && sourcingCacheKey===currentKey;
+  if(activeDemand().length===0 || active.length===0 || !laneAnalysisAvailable){
+    return {hpCount, lpCount, total:active.length, longLanes:[], laneAnalysisAvailable};
+  }
+  const sourcing = sourcingCacheValue;
   const longLanes = activeDemand().map(n=>{
     const summary = sourcing.nodeSummary[n.id];
     const primary = summary ? summary.primary : null;
@@ -3137,7 +3450,7 @@ function pressureLaneDiagnostics(){
     const isHpOnly = (source.highPressureCapable!==false) && (source.lowPressureCapable===false);
     return { nodeName:n.name, sourceName:source.name, dist:primary.dist, isHpOnly };
   }).filter(Boolean).filter(x=>x.isHpOnly).sort((a,b)=>b.dist-a.dist);
-  return {hpCount, lpCount, total:active.length, longLanes};
+  return {hpCount, lpCount, total:active.length, longLanes, laneAnalysisAvailable:true};
 }
 
 function renderSupplyTab(){
@@ -3146,15 +3459,17 @@ function renderSupplyTab(){
   const wmtTransfill = S.supply.filter(s=>s.isWmtTransfill).sort((a,b)=>a.name.localeCompare(b.name));
   const current = S.supply.filter(s=>(s.status||'current')!=='future' && !s.isWmtTransfill).sort((a,b)=>a.name.localeCompare(b.name));
   const future = S.supply.filter(s=>(s.status||'current')==='future' && !s.isWmtTransfill).sort((a,b)=>a.name.localeCompare(b.name));
+  const supplyCompanies=companyGroups(S.supply);
 
   function supplyRows(list, groupKey){
     if(list.length===0) return '<div class="empty">None yet.</div>';
-    return `<table><thead><tr><th style="width:42px;text-align:center">Use</th><th>Name</th><th>Location</th><th>Capacity (${S.params.unit}/day)</th><th>Cost ($/${S.params.unit})</th><th></th></tr></thead>
+    return `<table><thead><tr><th style="width:42px;text-align:center">Use</th><th>Name</th><th>Company</th><th>Location</th><th>Capacity (${S.params.unit}/day)</th><th>Cost ($/${S.params.unit})</th><th></th></tr></thead>
       <tbody>
       ${list.map(n=>`
         <tr>
           <td style="text-align:center"><input type="checkbox" class="supply-source-check" data-toggle-supply="${n.id}" data-supply-group="${groupKey}" ${supplySourceSelected(n)?'checked':''} aria-label="Use ${esc(n.name)} in optimization" style="width:17px;height:17px;cursor:pointer"></td>
-          <td><b>${esc(n.name)}</b></td>
+          <td><b>${esc(n.name)}</b>${isIhSupplySource(n)?' <span class="tag tag-med">IH</span>':''}</td>
+          <td>${n.company?esc(n.company):'<span style="color:var(--muted)">—</span>'}</td>
           <td>${esc(n.city||'')} <span style="color:#AAB2BD">(${n.lat.toFixed(2)}, ${n.lon.toFixed(2)})</span></td>
           <td>${fmt(n.capacity)}</td>
           <td>${money(n.cost)}</td>
@@ -3174,14 +3489,22 @@ function renderSupplyTab(){
       ${label} (${selected}/${list.length})
     </label>`;
   }
+  function companyToggle(group){
+    const selected=group.records.filter(supplySourceSelected).length;
+    return `<label title="Include or exclude all ${esc(group.label)} supply sources" style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:8px;padding:9px 10px;background:var(--note-bg);font-size:12px;font-weight:600;color:${selected?'var(--blue)':'var(--muted)'};cursor:pointer">
+      <input type="checkbox" class="supply-company-check" data-supply-company="${encodeURIComponent(group.key)}" data-selected="${selected}" data-total="${group.records.length}" ${selected===group.records.length?'checked':''} style="width:17px;height:17px;cursor:pointer;flex:0 0 auto">
+      <span>${esc(group.label)} <span style="font-weight:500;color:var(--muted)">(${selected}/${group.records.length})</span></span>
+    </label>`;
+  }
 
   return `
   <div class="grid2">
     <div>
-      <div class="card">
+      <div class="card" id="supplySourceEditor" style="scroll-margin-top:120px">
         <h2>${editing?'Edit Supply Source':'Add Supply Source'}</h2>
         <p class="desc">A location where trailers can be filled (production plant, fill station).</p>
         <div class="field"><label>Source Name</label><input id="fSName" placeholder="e.g. Baytown H2 Plant" value="${editing?esc(editing.name):''}"></div>
+        <div class="field"><label>Company</label><input id="fSCompany" placeholder="e.g. Walmart, Plug, Home Depot" value="${editing?esc(editing.company||''):''}"></div>
         <div class="field searchwrap">
           <label>City / Location search</label>
           <input id="fSCity" placeholder="Type a city..." autocomplete="off" value="${editing?esc(editing.city):''}">
@@ -3213,6 +3536,12 @@ function renderSupplyTab(){
           </label>
         </div>
         <div class="field">
+          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px">
+            <input id="fSIH" type="checkbox" ${editing&&isIhSupplySource(editing)?'checked':''} style="width:15px;height:15px;cursor:pointer">
+            IH supply source (gold star on maps)
+          </label>
+        </div>
+        <div class="field">
           <label>Status</label>
           <select id="fSStatus">
             <option value="current" ${editStatus==='current'?'selected':''}>Current — operational today</option>
@@ -3226,6 +3555,11 @@ function renderSupplyTab(){
       </div>
     </div>
     <div>
+      <div class="card">
+        <h2 style="margin-bottom:4px">Select Supply Sources by Company</h2>
+        <p class="desc">Company checkboxes are created automatically from the optional <b>Company</b> column in the Supply CSV. Uncheck a company to exclude all of its supply locations.</p>
+        ${supplyCompanies.length?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px">${supplyCompanies.map(companyToggle).join('')}</div>`:'<div class="empty" style="padding:16px">No company names loaded yet. Add them manually or populate the Company column in the Supply CSV.</div>'}
+      </div>
       <div class="card">
         <div class="flexbetween">
           <h2 style="margin-bottom:0">Current Supply Sources (${current.length})</h2>
@@ -3260,7 +3594,7 @@ function renderSupplyTab(){
       <div class="kpi ${diag.total>0&&diag.hpCount<diag.total?'warn':''}"><div class="val">${diag.hpCount} / ${diag.total}</div><div class="lbl">Sources High Pressure Capable</div></div>
       <div class="kpi"><div class="val">${diag.lpCount} / ${diag.total}</div><div class="lbl">Sources Low Pressure Capable</div></div>
     </div>
-    ${diag.longLanes.length?`
+    ${!diag.laneAnalysisAvailable?'<div class="note">Lane assignments will appear after you open Optimization Results. Company, group, and individual source selections remain fast and do not rerun the complete model on this screen.</div>':diag.longLanes.length?`
     <table><thead><tr><th>Demand Node</th><th>Assigned Source (High-Pressure-only)</th><th>Distance</th></tr></thead>
     <tbody>${diag.longLanes.map(l=>`<tr><td>${esc(l.nodeName)}</td><td>${esc(l.sourceName)}</td><td>${fmt(l.dist,0)} mi</td></tr>`).join('')}</tbody></table>`
     :'<div class="note">No demand node is currently primarily sourced from a High-Pressure-only supplier.</div>'}
@@ -3910,8 +4244,8 @@ function renderResultsTab(){
       ${hydrogenDataBadge()}
       ${publicHydrogenStatus==='error'?'<button class="btn btn-small btn-outline" id="btnRetryHydrogenData">Retry public H₂ data</button>':''}
     </div>
-    <div class="mapwrap" id="networkMapWrap" style="max-width:1160px;margin:0 auto">
-      <svg id="mapsvg" viewBox="0 0 ${PROJ.VBW} ${PROJ.VBH}" style="width:100%;height:auto;display:block;background:var(--map-bg)"></svg>
+    <div class="mapwrap network-map-primary" id="networkMapWrap">
+      <svg id="mapsvg" viewBox="0 0 ${NETWORK_MAP_PROJ.VBW} ${NETWORK_MAP_PROJ.VBH}" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="map-controls">
         <button class="btn btn-small btn-outline" id="btnMapZoomOut" title="Zoom out">−</button>
         <button class="btn btn-small btn-outline" id="btnMapZoomIn" title="Zoom in">+</button>
@@ -3922,7 +4256,8 @@ function renderResultsTab(){
         <div class="item"><span class="swatch" style="background:#C81E33"></span>High risk node</div>
         <div class="item"><span class="swatch" style="background:#B57500"></span>Medium risk node</div>
         <div class="item"><span class="swatch" style="background:#177A4C"></span>Low risk node</div>
-        <div class="item"><span class="swatch" style="background:var(--blue);border-radius:2px"></span>Current supply source</div>
+        <div class="item"><span class="swatch" style="background:var(--blue);border-radius:2px"></span>${S.supply.some(isIhSupplySource)?'Other supply source':'Current supply source'}</div>
+        ${S.supply.some(isIhSupplySource)?'<div class="item"><span style="display:inline-block;width:14px;margin-right:2px;color:#F2A900;font-size:16px;line-height:10px;text-align:center;text-shadow:0 0 1px #fff">★</span>IH supply source</div>':''}
         ${S.supply.some(s=>(s.status||'current')==='future')?`<div class="item"><span style="display:inline-block;width:10px;height:10px;border:1.3px dashed var(--blue);background:#5B9BD9;margin-right:6px;vertical-align:middle;border-radius:2px"></span>Future supply source</div>`:''}
         <div class="item"><span class="swatch" style="background:var(--amber);border-radius:2px;transform:rotate(45deg)"></span>Proposed staging hub</div>
         ${S.showTrailerRadius?`<div class="item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:1.3px solid var(--amber);background:rgba(242,169,0,.08);margin-right:6px;vertical-align:middle"></span>Delivery radius (${fmt(S.params.targetRadius,0)} mi)</div>`:''}
@@ -4117,6 +4452,7 @@ function renderResultsTab(){
 /* ===================== RENDER: SCENARIO PLANNING TAB ===================== */
 let lastScenario = null;
 let lastMultiComparison = null;
+let lastSupplySavings = null;
 function renderScenarioTab(){
   if(PORTAL_MODE && (S.demand.length===0 || S.supply.length===0)){
     return `
@@ -4140,11 +4476,23 @@ function renderScenarioTab(){
   const selectedNodeIds = new Set((S.scenarioNodeIds||[]).filter(id=>demand.some(n=>n.id===id)));
   const multiSourceIds = new Set((S.multiCompareSourceIds||[]).filter(id=>sources.some(s=>s.id===id)));
   const multiNodeIds = new Set((S.multiCompareNodeIds||[]).filter(id=>demand.some(n=>n.id===id)));
+  const savingsCandidateIds = new Set((S.supplySavingsCandidateIds||[]).filter(id=>sources.some(s=>s.id===id)));
+  const savingsExcludedIds = new Set((S.supplySavingsExcludedSourceIds||[]).filter(id=>sources.some(s=>s.id===id)));
+  const savingsNodeIds = new Set((S.supplySavingsNodeIds||[]).filter(id=>demand.some(n=>n.id===id)));
   if(lastMultiComparison){
     lastMultiComparison=computeMultiSourceComparison(
       Array.from(multiSourceIds),
       Array.from(multiNodeIds),
       Number(S.multiCompareDays)||1
+    );
+  }
+  if(lastSupplySavings){
+    lastSupplySavings=computeSupplyAdditionSavings(
+      Array.from(savingsCandidateIds),
+      Array.from(savingsExcludedIds),
+      Array.from(savingsNodeIds),
+      Number(S.supplySavingsDays)||365,
+      S.supplySavingsUseExistingPriceOverride?S.supplySavingsExistingPriceOverride:null
     );
   }
 
@@ -4406,6 +4754,93 @@ function renderScenarioTab(){
       </div>`;
   }
 
+  let supplySavingsHtml='';
+  if(!PORTAL_MODE){
+    const savings=lastSupplySavings;
+    const savingsResults=savings?`
+      <div class="kpirow" style="margin-top:16px">
+        <div class="kpi"><div class="val">${signedMoney(savings.transportationSavings,0)}</div><div class="lbl">${fmt(savings.serviceDays,0)}-Day Transportation Savings</div></div>
+        <div class="kpi"><div class="val">${signedMoney(savings.moleculeSavings,0)}</div><div class="lbl">${fmt(savings.serviceDays,0)}-Day Molecule Savings</div></div>
+        <div class="kpi"><div class="val">${signedMoney(savings.allInSavings,0)}</div><div class="lbl">${fmt(savings.serviceDays,0)}-Day All-In Savings</div></div>
+        <div class="kpi"><div class="val">${signedMoney(savings.annualizedTransportationSavings,0)}</div><div class="lbl">Annualized Transportation Savings</div></div>
+        <div class="kpi"><div class="val">${signedMoney(savings.annualizedMoleculeSavings,0)}</div><div class="lbl">Annualized Molecule Savings</div></div>
+        <div class="kpi"><div class="val">${signedMoney(savings.annualizedSavings,0)}</div><div class="lbl">Annualized All-In Savings</div></div>
+      </div>
+      <div class="note" style="margin:0 0 10px">${savings.existingPriceOverride!==null?`Existing sources use the global ${money(savings.existingPriceOverride,2)}/${S.params.unit} override; candidate sources retain their actual file prices. `:'All sources use their actual file prices. '}${savings.excludedSources.length} unavailable source(s) excluded from both cases. ${savings.nodesUsingCandidate} of ${savings.nodes.length} selected node(s) shift to a candidate source. Comparable all-in cost falls from <b>${money(savings.baselineAllInCost,0)}</b> to <b>${money(savings.withAdditionAllInCost,0)}</b>, a ${fmt(savings.savingsPercent,1)}% reduction. Transportation changes from ${money(savings.baselineCost,0)} to ${money(savings.withAdditionCost,0)}; molecule cost changes from ${money(savings.baselineMoleculeCost,0)} to ${money(savings.withAdditionMoleculeCost,0)}. ${savings.newlyServiceableCount?`${savings.newlyServiceableCount} additional node(s) become serviceable but are excluded from dollar savings because no feasible baseline lane existed.`:''}</div>
+      <div style="overflow-x:auto">
+        <table><thead><tr><th>Demand Node</th><th>City / State</th><th>Consumption</th><th>Baseline Source</th><th>Source After Addition</th><th>Baseline Transportation</th><th>New Transportation</th><th>Transportation Savings</th><th>Baseline Molecule</th><th>New Molecule</th><th>Molecule Savings</th><th>All-In Savings</th><th>Result</th></tr></thead>
+        <tbody>${savings.results.map(result=>`<tr class="${result.candidateUsed&&result.allInSavings>0?'multi-optimal-row':''}">
+          <td><b>${esc(result.node.name)}</b></td>
+          <td>${result.node.city?esc(result.node.city):(()=>{const location=nearestCityRef(result.node.lat,result.node.lon);return location?`${esc(location.name)}, ${esc(location.state)}`:'—';})()}</td>
+          <td>${fmt(result.node.rate)} ${S.params.unit}/day</td>
+          <td>${result.baseline?`<b>${esc(result.baseline.source.name)}</b><br><span style="color:var(--muted)">${money(result.baseline.unitPrice,2)}/${S.params.unit}${result.baseline.usesPriceOverride?' global override':''} · ${fmt(result.baseline.lane.dist,1)} mi one way</span>`:'<span style="color:var(--muted)">No feasible baseline</span>'}</td>
+          <td>${result.withAddition?`<b>${esc(result.withAddition.source.name)}</b><br><span style="color:var(--muted)">${money(result.withAddition.unitPrice,2)}/${S.params.unit}${result.withAddition.usesPriceOverride?' global override':' actual'} · ${fmt(result.withAddition.lane.dist,1)} mi one way</span>`:'<span style="color:var(--red)">No feasible source</span>'}</td>
+          <td>${result.baseline?money(result.baseline.transportationCost,0):'—'}</td>
+          <td>${result.withAddition?money(result.withAddition.transportationCost,0):'—'}</td>
+          <td><b>${result.comparable?signedMoney(result.transportationSavings,0):'—'}</b></td>
+          <td>${result.baseline?money(result.baseline.moleculeCost,0):'—'}</td>
+          <td>${result.withAddition?money(result.withAddition.moleculeCost,0):'—'}</td>
+          <td><b>${result.comparable?signedMoney(result.moleculeSavings,0):'—'}</b></td>
+          <td><b>${result.comparable?signedMoney(result.allInSavings,0):'—'}</b></td>
+          <td>${!result.baseline&&result.withAddition?'<span class="tag tag-low">Newly serviceable</span>':result.candidateUsed&&result.allInSavings>0?'<span class="tag tag-low">✓ New source saves</span>':result.candidateUsed?'<span class="tag tag-med">New source used</span>':'<span style="color:var(--muted)">No change</span>'}</td>
+        </tr>`).join('')}</tbody></table>
+      </div>
+      <div class="note">The winning source minimizes all-in cost. Transportation = round-trip miles × required trailer loads × ${money(savings.costPerMile,2)}/mile. Molecule cost = service volume × source price per ${S.params.unit}. A negative component savings means that component increased, even though the combined all-in option improved. Road mileage is used wherever routing data is available.</div>`
+      : '<div class="empty" style="padding:22px;margin-top:16px">Choose the new supply source and demand nodes, then calculate molecule, transportation, and all-in savings.</div>';
+    supplySavingsHtml=`
+      <div class="card">
+        <h2>New Supply Source Cost Savings</h2>
+        <p class="desc">Measure both molecule and transportation savings from a new source. Choose which sources exist in the baseline, which new source is being added, and which demand nodes should be evaluated.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px">
+          <div>
+            <div class="subhead" style="margin-top:4px">New / Candidate Supply Source</div>
+            <div class="toolbar" style="margin-bottom:6px"><button type="button" class="btn btn-small btn-outline" data-clearall="supplySavingsCandidateList">Clear</button></div>
+            <div id="supplySavingsCandidateList" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+              ${sources.map(source=>`<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px;cursor:pointer">
+                <input type="checkbox" class="supplySavingsCandidateList-item" value="${source.id}" ${savingsCandidateIds.has(source.id)?'checked':''}>
+                <span><b>${esc(source.name)}</b> · ${money(source.cost,2)}/${S.params.unit} · ${fmt(source.capacity)} ${S.params.unit}/day${(source.status||'current')==='future'?' · future':''}</span>
+              </label>`).join('')}
+            </div>
+            <div class="note" style="margin-top:7px">Candidate sources are removed from the baseline automatically. Newly added or imported sources are preselected here.</div>
+          </div>
+          <div>
+            <div class="subhead" style="margin-top:4px">Unavailable / Future Sources</div>
+            <div class="toolbar" style="margin-bottom:6px">
+              <button type="button" class="btn btn-small btn-outline" id="btnSelectFutureSavingsExclusions">Select Future</button>
+              <button type="button" class="btn btn-small btn-outline" data-clearall="supplySavingsExcludedSourceList">Clear</button>
+            </div>
+            <div id="supplySavingsExcludedSourceList" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+              ${sources.map(source=>`<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px;cursor:pointer">
+                <input type="checkbox" class="supplySavingsExcludedSourceList-item" data-future="${(source.status||'current')==='future'?'true':'false'}" value="${source.id}" ${savingsExcludedIds.has(source.id)?'checked':''}>
+                <span><b>${esc(source.name)}</b> · ${money(source.cost,2)}/${S.params.unit}${(source.status||'current')==='future'?' · future':''}</span>
+              </label>`).join('')}
+            </div>
+            <div class="note" style="margin-top:7px">These sites are excluded from both cases. To test one being added, select it as a candidate instead.</div>
+          </div>
+          <div>
+            <div class="subhead" style="margin-top:4px">Demand Nodes to Evaluate</div>
+            ${checklist('supplySavingsNodeList',demand,savingsNodeIds,node=>`${esc(node.name)} · ${fmt(node.rate)} ${S.params.unit}/day`)}
+          </div>
+        </div>
+        <div style="display:flex;align-items:end;gap:10px;margin-top:12px;flex-wrap:wrap">
+          <div class="field" style="width:200px;margin:0"><label>Evaluation Period (days)</label><input id="fSupplySavingsDays" type="number" min="1" step="1" value="${S.supplySavingsDays||365}"></div>
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--note-bg);min-width:330px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:var(--heading);cursor:pointer;margin-bottom:6px">
+              <input id="chkSupplySavingsPriceOverride" type="checkbox" ${S.supplySavingsUseExistingPriceOverride?'checked':''} style="width:17px;height:17px;cursor:pointer">
+              Override all existing-source H2 prices
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted)">
+              Global existing price
+              <span>$</span><input id="fSupplySavingsPriceOverride" type="number" min="0" step="0.01" placeholder="e.g. 14.00" value="${S.supplySavingsExistingPriceOverride!==null&&S.supplySavingsExistingPriceOverride!==''&&Number.isFinite(Number(S.supplySavingsExistingPriceOverride))?Number(S.supplySavingsExistingPriceOverride).toFixed(2):''}" ${S.supplySavingsUseExistingPriceOverride?'':'disabled'} style="width:100px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;color:var(--text);background:var(--input-bg)">
+              /${S.params.unit}
+            </label>
+          </div>
+          <button class="btn btn-primary" id="btnRunSupplySavings">Calculate Cost Savings</button>
+        </div>
+        ${savingsResults}
+      </div>`;
+  }
+
   return `
   <div class="grid2">
     <div>
@@ -4446,12 +4881,13 @@ function renderScenarioTab(){
         : 'Direct mode bypasses staged hubs and resiliency assets. It prices the chosen source serving each selected node at its stored consumption rate, including molecule cost, loaded delivery mileage, and empty return mileage.'}</div>
     </div>
     <div>
-      ${!PORTAL_MODE&&!resiliency?`
+      ${!PORTAL_MODE?`
         <div class="toolbar" style="justify-content:flex-end;margin:0 0 12px">
-          <button class="btn btn-outline" id="btnClearScenarioResults" ${!lastScenario&&!lastMultiComparison?'disabled style="opacity:.55;cursor:not-allowed"':''}>Clear Results</button>
+          <button class="btn btn-outline" id="btnClearScenarioResults" ${!lastScenario&&!lastMultiComparison&&!lastSupplySavings?'disabled style="opacity:.55;cursor:not-allowed"':''}>Clear Results</button>
         </div>`:''}
       ${resultsHtml || (resiliency?'<div class="card"><div class="empty">Check at least one source or demand node, then click "Run Scenario" to see the response plan.</div></div>':'')}
       ${multiComparisonHtml}
+      ${supplySavingsHtml}
     </div>
   </div>`;
 }
@@ -4486,8 +4922,9 @@ function renderAssetPlacementTab(){
       ${r.assets.map(a=>`
         <tr>
           <td><b>${esc(a.assetName)}</b><br><span style="color:#AAB2BD">${a.assetType==='trailer'?`storage ${fmt(a.assetStorageCapacity,0)}`:`compression ${fmt(a.assetCapacity,0)} · storage ${fmt(a.assetStorageCapacity,0)}`}</span></td>
-          <td>${a.cityRef?`<b>${esc(a.cityRef.name)}, ${esc(a.cityRef.state)}</b> area`:'<b>Unnamed area</b>'}<br>
-              <span style="color:#AAB2BD">${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}${a.townResolved?' · ~'+fmt(a.townOffsetMiles,0)+' mi from calculated centroid':' · locating nearest town…'}</span></td>
+          <td>${a.placementDemandNode
+            ? `<b>${esc(a.placementDemandNode.name)}</b><br><span style="color:#AAB2BD">Selected demand location · ${a.cityRef?esc(a.cityRef.name)+', '+esc(a.cityRef.state):a.lat.toFixed(3)+', '+a.lon.toFixed(3)}</span>`
+            : `<b>True optimized centroid</b>${a.cityRef?`<br><span style="color:#AAB2BD">Nearest reference: ${esc(a.cityRef.name)}, ${esc(a.cityRef.state)}</span>`:''}<br><span style="color:#AAB2BD">${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}</span>`}</td>
           <td>${a.nearestFacility?`${esc(a.nearestFacility.name)}<br><span style="color:#AAB2BD">${fmt(a.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
           <td>${a.covered.length}</td>
           <td>${fmt(a.coveredDemand)} ${S.params.unit}/day</td>
@@ -4582,7 +5019,7 @@ function renderAssetPlacementTab(){
       ${resultSection('Compression', result.compression, 'compression throughput')}
       ${resultSection('Trailers', result.storage, 'storage capacity')}
       ${result.compression.assets.length===0 && result.storage.assets.length===0?'<div class="card"><div class="empty">Add at least one asset to see a placement plan.</div></div>':''}
-      <div class="note" style="margin-top:0">Each weighted cluster center is matched to its nearest real town center. Compression assets and trailers are placed independently. Confirm operational suitability and available yard space before deployment.</div>
+      <div class="note" style="margin-top:0">${ap.constrainToDemandNodes?'Each weighted cluster is constrained to its most ideal covered demand location, minimizing worst reach and then weighted average reach.':'Each weighted cluster remains at its true mathematical optimum centroid.'} Compression assets and trailers are placed independently. Confirm operational suitability and available yard space before deployment.</div>
       `}
     </div>
   </div>`;
@@ -4608,7 +5045,9 @@ function renderAssetPlacementRecommendationTab(){
       <table><thead><tr><th>Assigned Asset</th><th>Proposed Location</th><th>Nearest Facility</th><th>Nodes Covered</th><th>Coverage Demand</th><th>Avg / Max Reach</th><th>Capacity Check</th></tr></thead>
       <tbody>${r.assets.map(a=>`<tr>
         <td><b>${esc(a.assetName)}</b><br><span style="color:var(--muted)">${a.assetType==='trailer'?`storage ${fmt(a.assetStorageCapacity,0)}`:`compression ${fmt(a.assetCapacity,0)} · storage ${fmt(a.assetStorageCapacity,0)}`}</span></td>
-        <td><b>${a.cityRef?`${esc(a.cityRef.name)}, ${esc(a.cityRef.state)}`:'Unnamed area'}</b><br><span style="color:var(--muted)">${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}</span></td>
+        <td>${a.placementDemandNode
+          ? `<b>${esc(a.placementDemandNode.name)}</b><br><span style="color:var(--muted)">Selected demand location · ${a.cityRef?esc(a.cityRef.name)+', '+esc(a.cityRef.state):a.lat.toFixed(3)+', '+a.lon.toFixed(3)}</span>`
+          : `<b>True optimized centroid</b>${a.cityRef?`<br><span style="color:var(--muted)">Nearest reference: ${esc(a.cityRef.name)}, ${esc(a.cityRef.state)}</span>`:''}<br><span style="color:var(--muted)">${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}</span>`}</td>
         <td>${a.nearestFacility?`${esc(a.nearestFacility.name)}<br><span style="color:var(--muted)">${fmt(a.nearestFacilityDist,0)} mi away</span>`:'—'}</td>
         <td>${a.covered.length}</td><td>${fmt(a.coveredDemand)} ${S.params.unit}/day</td>
         <td>${fmt(a.avgDist,0)} mi (${fmtHours(a.avgHours)}) / ${fmt(a.maxDist,0)} mi (${fmtHours(a.maxHours)})</td>
@@ -4621,9 +5060,9 @@ function renderAssetPlacementRecommendationTab(){
       <div class="flexbetween" style="align-items:flex-start;gap:16px">
         <div>
           <h2 style="margin-bottom:3px">Asset Placement Targets</h2>
-          <p class="desc" style="margin-bottom:0">These controls are synchronized with Input Parameters. Adjust a slider to test the recommendation against a different target.</p>
+          <p class="desc" style="margin-bottom:0">The sliders are synchronized with Input Parameters. Use the placement checkbox to compare unconstrained centers with actual demand-site placement.</p>
         </div>
-        <span class="tag tag-low" style="white-space:nowrap">Synced with Input Parameters</span>
+        <span class="tag tag-low" style="white-space:nowrap">Targets synced with Input Parameters</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:14px">
         <div class="field">
@@ -4642,6 +5081,13 @@ function renderAssetPlacementRecommendationTab(){
           <label>Maximum Nodes Down Simultaneously: <span class="rangeval" id="assetRecMaxNodesDownVal">${ap.maxNodesDownAll?`All (${activeNodeCount})`:ap.maxNodesDown}</span></label>
           <input id="assetRecMaxNodesDown" type="range" min="1" max="${activeNodeCount}" step="1" value="${ap.maxNodesDown}">
         </div>
+        <div class="field" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--note-bg);margin-bottom:10px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--heading);font-size:12px">
+            <input id="assetRecConstrainDemandNodes" type="checkbox" ${ap.constrainToDemandNodes?'checked':''} style="width:17px;height:17px;cursor:pointer;flex:0 0 auto">
+            Constrain placements to demand locations
+          </label>
+          <div style="font-size:10.5px;color:var(--muted);line-height:1.4;margin-top:6px">${ap.constrainToDemandNodes?'On: each asset is placed at the best actual covered demand node.':'Off: assets remain at the true mathematical optimum centroid.'}</div>
+        </div>
       </div>
       <div class="note" style="margin-top:4px">The displayed value updates while you drag. The placement recommendation, reach checks, map radius, and capacity checks refresh when you release the slider. Selecting the highest outage value means all currently selected nodes.</div>
     </div>
@@ -4654,7 +5100,7 @@ function renderAssetPlacementRecommendationTab(){
     </div>
     <div class="card status-card ${!shortfalls&&!outside?'status-ok':''}">
       <b class="status-title">${!shortfalls&&!outside?'✓ Recommendation meets the configured targets':'⚠ Recommendation needs review'}</b>
-      &nbsp;—&nbsp; Based on ${assetInventoryCount()} imported/entered asset(s), ${fmt(ap.targetRadius,0)}mi / ${fmt(ap.targetHours,1)}h reach, ${fmt(ap.safetyDays,1)} storage day(s), and capacity for ${outageLabel}.
+      &nbsp;—&nbsp; Based on ${assetInventoryCount()} imported/entered asset(s), ${fmt(ap.targetRadius,0)}mi / ${fmt(ap.targetHours,1)}h reach, ${fmt(ap.safetyDays,1)} storage day(s), capacity for ${outageLabel}, and ${ap.constrainToDemandNodes?'demand-location-constrained':'centroid-based'} placement.
     </div>
     <div class="card">
       <div class="flexbetween">
@@ -4735,7 +5181,10 @@ function drawAssetRecommendationMap(){
     el.addEventListener('mousemove',evt=>{
       const asset=all.find(a=>`${a.kind}:${a.assetId}`===el.dataset.key);
       if(!asset) return;
-      showTooltip(evt,`<b>${esc(asset.assetName)}</b><br><span class="mut">${asset.kind==='compression'?'Compression asset':'Trailer'} · ${asset.cityRef?esc(asset.cityRef.name)+', '+esc(asset.cityRef.state):'Unnamed area'}</span><br>Covers ${asset.covered.length} DC(s), ${fmt(asset.coveredDemand)} ${S.params.unit}/day<br>Avg / max reach: ${fmt(asset.avgDist,0)} mi (${fmtHours(asset.avgHours)}) / ${fmt(asset.maxDist,0)} mi (${fmtHours(asset.maxHours)})<br><span style="color:${asset.capacitySufficient?'#5FCF9B':'#F2647A'}">${asset.capacitySufficient?'Capacity sufficient':'Capacity shortfall'}</span>`);
+      const locationLabel=asset.placementDemandNode
+        ? `${esc(asset.placementDemandNode.name)} · selected demand location`
+        : `true optimized centroid · ${asset.lat.toFixed(3)}, ${asset.lon.toFixed(3)}`;
+      showTooltip(evt,`<b>${esc(asset.assetName)}</b><br><span class="mut">${asset.kind==='compression'?'Compression asset':'Trailer'} · ${locationLabel}</span><br>Covers ${asset.covered.length} DC(s), ${fmt(asset.coveredDemand)} ${S.params.unit}/day<br>Avg / max reach: ${fmt(asset.avgDist,0)} mi (${fmtHours(asset.avgHours)}) / ${fmt(asset.maxDist,0)} mi (${fmtHours(asset.maxHours)})<br><span style="color:${asset.capacitySufficient?'#5FCF9B':'#F2647A'}">${asset.capacitySufficient?'Capacity sufficient':'Capacity shortfall'}</span>`);
     });
     el.addEventListener('mouseleave',()=>tooltip.style.display='none');
   });
@@ -5021,7 +5470,7 @@ function attachNetworkMapInteractions(){
   const wrap=document.getElementById('networkMapWrap');
   const svg=document.getElementById('mapsvg');
   if(!wrap||!svg) return;
-  const full={x:0,y:0,w:PROJ.VBW,h:PROJ.VBH};
+  const full={x:0,y:0,w:NETWORK_MAP_PROJ.VBW,h:NETWORK_MAP_PROJ.VBH};
   if(!networkMapViewBox) networkMapViewBox={...full};
 
   const applyViewBox=()=>{
@@ -5203,6 +5652,8 @@ function drawMap(){
   const svg = document.getElementById('mapsvg');
   if(!svg || !lastComputed) return;
   const {sourcing, risk, hubs} = lastComputed;
+  const mapProj=NETWORK_MAP_PROJ;
+  const mapXY=(lat,lon)=>projectTo(lat,lon,mapProj);
   // State shapes/labels are baked as literal SVG attributes (not CSS-driven), so they need an
   // explicit light/dark palette rather than following the page theme automatically.
   const mapColors = THEME==='dark'
@@ -5210,11 +5661,11 @@ function drawMap(){
     : { fill:'#FFFFFF', stroke:'#CBD2DB', label:'#AEB6C2' };
   let html = '';
   Object.values(STATE_PATHS).forEach(d=>{
-    html += `<path d="${d}" fill="${mapColors.fill}" stroke="${mapColors.stroke}" stroke-width="0.8"/>`;
+    html += `<path d="${reprojectPathD(d,mapProj)}" fill="${mapColors.fill}" stroke="${mapColors.stroke}" stroke-width="0.9"/>`;
   });
   STATE_LABELS.forEach(s=>{
-    const [x,y] = svgXY(s.lat,s.lon);
-    html += `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="7" fill="${mapColors.label}" text-anchor="middle" dominant-baseline="middle" font-family="Arial,Helvetica,sans-serif" style="pointer-events:none;user-select:none">${s.abbr}</text>`;
+    const [x,y] = mapXY(s.lat,s.lon);
+    html += `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="8.5" fill="${mapColors.label}" text-anchor="middle" dominant-baseline="middle" font-family="Arial,Helvetica,sans-serif" style="pointer-events:none;user-select:none">${s.abbr}</text>`;
   });
 
   // assignment lines
@@ -5222,7 +5673,7 @@ function drawMap(){
   sourcing.flows.forEach(f=>{
     const n = S.demand.find(x=>x.id===f.nodeId), s = S.supply.find(x=>x.id===f.sourceId);
     if(!n||!s) return;
-    const [x1,y1]=svgXY(n.lat,n.lon), [x2,y2]=svgXY(s.lat,s.lon);
+    const [x1,y1]=mapXY(n.lat,n.lon), [x2,y2]=mapXY(s.lat,s.lon);
     const w = 0.5 + 2.2*(f.amt/maxAmt);
     html += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#8FA3BF" stroke-width="${w.toFixed(2)}" opacity="0.55"/>`;
   });
@@ -5233,15 +5684,15 @@ function drawMap(){
   // letting you visually spot any covered node that falls outside the configured delivery radius.
   const kmPerMile = 1.60934;
   const deliveryRadiusMiles = S.params.targetRadius;
-  const deliveryRadiusPx = deliveryRadiusMiles * kmPerMile * PROJ.scale;
+  const deliveryRadiusPx = deliveryRadiusMiles * kmPerMile * mapProj.scale;
   if(S.showTrailerRadius){
     hubs.forEach(h=>{
-      const [hx,hy] = svgXY(h.lat,h.lon);
+      const [hx,hy] = mapXY(h.lat,h.lon);
       html += `<circle cx="${hx.toFixed(1)}" cy="${hy.toFixed(1)}" r="${deliveryRadiusPx.toFixed(1)}" fill="#F2A900" fill-opacity="0.06" stroke="#F2A900" stroke-width="1.3" opacity="0.75"/>`;
     });
   }
   hubs.forEach(h=>{
-    const [hx,hy] = svgXY(h.lat,h.lon);
+    const [hx,hy] = mapXY(h.lat,h.lon);
     html += `<g transform="translate(${hx.toFixed(1)},${hy.toFixed(1)}) rotate(45)" class="node-hub" data-id="hub${h.idx}" style="cursor:pointer">
       <rect x="-6" y="-6" width="12" height="12" fill="#F2A900" stroke="#fff" stroke-width="1.3"/>
     </g>`;
@@ -5251,15 +5702,15 @@ function drawMap(){
   // circle) from trailer hubs (amber, solid circle) since it's a separate resiliency mechanism
   // with its own radius/time targets.
   const hycasUnits = lastComputed.hycasUnits || [];
-  const hycasRadiusPx = S.params.hycasRadius * kmPerMile * PROJ.scale;
+  const hycasRadiusPx = S.params.hycasRadius * kmPerMile * mapProj.scale;
   if(S.showHycasRadius){
     hycasUnits.forEach(u=>{
-      const [ux,uy] = svgXY(u.lat,u.lon);
+      const [ux,uy] = mapXY(u.lat,u.lon);
       html += `<circle cx="${ux.toFixed(1)}" cy="${uy.toFixed(1)}" r="${hycasRadiusPx.toFixed(1)}" fill="#7A5195" fill-opacity="0.05" stroke="#7A5195" stroke-width="1.2" stroke-dasharray="5,3" opacity="0.7"/>`;
     });
   }
   hycasUnits.forEach(u=>{
-    const [ux,uy] = svgXY(u.lat,u.lon);
+    const [ux,uy] = mapXY(u.lat,u.lon);
     html += `<g transform="translate(${ux.toFixed(1)},${uy.toFixed(1)})" class="node-hycas" data-id="hycas${u.idx}" style="cursor:pointer">
       <polygon points="0,-8 7,5 -7,5" fill="#7A5195" stroke="#fff" stroke-width="1.3"/>
     </g>`;
@@ -5269,20 +5720,23 @@ function drawMap(){
   // ghosted (low opacity, hollow) when the Include Future toggle is off, so it's visually obvious
   // which sources actually fed this optimization run.
   S.supply.forEach(s=>{
-    const [x,y]=svgXY(s.lat,s.lon);
+    const [x,y]=mapXY(s.lat,s.lon);
     const isFuture = (s.status||'current')==='future';
     const isActive = supplySourceSelected(s);
+    const isIH = isIhSupplySource(s);
     const fill = isFuture ? (isActive ? '#5B9BD9' : mapColors.fill) : '#0071CE';
     const dash = isFuture ? ' stroke-dasharray="2,1.5"' : '';
     const opacity = isActive ? 1 : 0.55;
-    html += `<rect x="${(x-5).toFixed(1)}" y="${(y-5).toFixed(1)}" width="10" height="10" fill="${fill}" stroke="#0071CE" stroke-width="1.3" opacity="${opacity}"${dash} class="node-supply" data-id="${s.id}" style="cursor:pointer"/>`;
+    html += isIH
+      ? `<polygon points="${starPoints(x,y,9,4)}" fill="#F2A900" stroke="#FFFFFF" stroke-width="1.4" opacity="${opacity}"${dash} class="node-supply node-supply-ih" data-id="${s.id}" style="cursor:pointer"/>`
+      : `<rect x="${(x-5).toFixed(1)}" y="${(y-5).toFixed(1)}" width="10" height="10" fill="${fill}" stroke="#0071CE" stroke-width="1.3" opacity="${opacity}"${dash} class="node-supply" data-id="${s.id}" style="cursor:pointer"/>`;
   });
 
   // demand markers
   const maxRate = Math.max(1,...activeDemand().map(n=>n.rate));
   const riskColor = {High:'#C81E33', Med:'#B57500', Low:'#177A4C'};
   activeDemand().forEach(n=>{
-    const [x,y]=svgXY(n.lat,n.lon);
+    const [x,y]=mapXY(n.lat,n.lon);
     const r = 4 + 8*Math.sqrt(n.rate/maxRate);
     const tier = risk[n.id].tier;
     html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="${riskColor[tier]}" stroke="#fff" stroke-width="1.3" opacity="0.92" class="node-demand" data-id="${n.id}" style="cursor:pointer"/>`;
@@ -5293,7 +5747,7 @@ function drawMap(){
   // a location with commercial capacity and cost assumptions.
   publicHydrogenStations.forEach(st=>{
     if(!Number.isFinite(st.latitude) || !Number.isFinite(st.longitude)) return;
-    const [x,y]=svgXY(st.latitude,st.longitude);
+    const [x,y]=mapXY(st.latitude,st.longitude);
     html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="#00A6A6" stroke="#FFFFFF" stroke-width="1" opacity="0.9" class="node-public-h2" data-id="${st.id}" style="cursor:pointer"/>`;
   });
 
@@ -5337,7 +5791,7 @@ function drawMap(){
       const statusLine = isFuture
         ? (isActive ? '<span style="color:#8FC1F0">Future — selected for this run</span>' : '<span style="color:#AAB2BD">Future — not selected for this run</span>')
         : (isActive?'<span class="mut">Current — selected for this run</span>':'<span style="color:#AAB2BD">Current — not selected for this run</span>');
-      showTooltip(evt, `<b>${esc(s.name)}</b><br><span class="mut">${esc(s.city||'')}</span><br>
+      showTooltip(evt, `<b>${esc(s.name)}</b>${isIhSupplySource(s)?' <span style="color:#F2A900">★ IH</span>':''}<br><span class="mut">${esc(s.city||'')}</span><br>
         ${statusLine}<br>
         Capacity: ${fmt(s.capacity)} ${S.params.unit}/day<br>
         Allocated: ${isActive?fmt(used)+' '+S.params.unit+'/day ('+fmt(100*used/s.capacity,0)+'%)':'—'}<br>
@@ -5503,10 +5957,13 @@ function buildPresentationSVG(exportTheme){
     const [x,y] = toMap(s.lat,s.lon);
     const isFuture = (s.status||'current')==='future';
     const isActive = supplySourceSelected(s);
+    const isIH = isIhSupplySource(s);
     const fill = isFuture ? (isActive ? '#5B9BD9' : PAL.MAPFILL) : '#0071CE';
     const dash = isFuture ? ' stroke-dasharray="3,2"' : '';
     const opacity = isActive ? 1 : 0.55;
-    svg += `<rect x="${(x-6.5).toFixed(1)}" y="${(y-6.5).toFixed(1)}" width="13" height="13" fill="${fill}" stroke="#0071CE" stroke-width="1.8" opacity="${opacity}"${dash}/>`;
+    svg += isIH
+      ? `<polygon points="${starPoints(x,y,11,5)}" fill="#F2A900" stroke="#FFFFFF" stroke-width="1.8" opacity="${opacity}"${dash}/>`
+      : `<rect x="${(x-6.5).toFixed(1)}" y="${(y-6.5).toFixed(1)}" width="13" height="13" fill="${fill}" stroke="#0071CE" stroke-width="1.8" opacity="${opacity}"${dash}/>`;
   });
 
   // demand markers
@@ -5527,14 +5984,18 @@ function buildPresentationSVG(exportTheme){
   svg += `<text x="${sbX+18}" y="${sy}" font-size="12" font-weight="700" fill="${MUTED}">LEGEND</text>`;
   sy += 30;
   const hasFuture = S.supply.some(s=>(s.status||'current')==='future');
+  const hasIH = S.supply.some(isIhSupplySource);
   const legendItems = [
     ['#C81E33','circle','High risk node'], ['#B57500','circle','Medium risk node'], ['#177A4C','circle','Low risk node'],
-    ['#0071CE','square','Current supply source'], ['#F2A900','diamond','Proposed staging hub'],
+    ['#0071CE','square',hasIH?'Other supply source':'Current supply source'],
+    ...(hasIH?[['#F2A900','star','IH supply source']]:[]),
+    ['#F2A900','diamond','Proposed staging hub'],
   ];
   legendItems.forEach(([color,shape,label])=>{
     const cx=sbX+26, cy=sy-4;
     if(shape==='circle') svg += `<circle cx="${cx}" cy="${cy}" r="7" fill="${color}" stroke="#fff" stroke-width="1.2"/>`;
     else if(shape==='square') svg += `<rect x="${cx-6}" y="${cy-6}" width="12" height="12" fill="${color}"/>`;
+    else if(shape==='star') svg += `<polygon points="${starPoints(cx,cy,8,3.6)}" fill="${color}" stroke="#fff" stroke-width="1.2"/>`;
     else svg += `<g transform="translate(${cx},${cy}) rotate(45)"><rect x="-6" y="-6" width="12" height="12" fill="${color}"/></g>`;
     svg += `<text x="${sbX+44}" y="${sy}" font-size="12.5" fill="${TEXT}">${esc(label)}</text>`;
     sy += 26;
@@ -5914,7 +6375,7 @@ function buildAssetPlacementMapSVG(exportTheme){
   let svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${VBW}" height="${VBH}" viewBox="0 0 ${VBW} ${VBH}" font-family="Arial,Helvetica,sans-serif">`;
   svg+=`<rect width="${VBW}" height="${VBH}" fill="${PAL.BG}"/>`;
   svg+=`<text x="36" y="52" font-size="30" font-weight="700" fill="${PAL.HEADING}">HyWeave — Asset Placement Map</text>`;
-  svg+=`<text x="36" y="80" font-size="14" fill="${PAL.MUTED}">${all.length} assigned asset(s) · ${activeDemand().length} demand center(s) · ${fmt(S.assetPlacement.targetRadius,0)} mi / ${fmt(S.assetPlacement.targetHours,1)} h target · ${S.assetPlacement.maxNodesDownAll?'all nodes':`up to ${S.assetPlacement.maxNodesDown} nodes`} down</text>`;
+  svg+=`<text x="36" y="80" font-size="14" fill="${PAL.MUTED}">${all.length} assigned asset(s) · ${activeDemand().length} demand center(s) · ${fmt(S.assetPlacement.targetRadius,0)} mi / ${fmt(S.assetPlacement.targetHours,1)} h target · ${S.assetPlacement.maxNodesDownAll?'all nodes':`up to ${S.assetPlacement.maxNodesDown} nodes`} down · ${S.assetPlacement.constrainToDemandNodes?'demand-location constrained':'centroid based'}</text>`;
   svg+=`<rect x="36" y="90" width="120" height="4" fill="#0071CE"/><line x1="36" y1="100" x2="${VBW-36}" y2="100" stroke="${PAL.BORDER}"/>`;
   svg+=svgReportBrandingSVG(VBW-36,45,PAL.MUTED);
   svg+=`<rect x="${mapX}" y="${mapY}" width="${mapW}" height="${mapH}" fill="${PAL.PANEL}" stroke="${PAL.BORDER}"/>`;
@@ -5941,7 +6402,7 @@ function buildAssetPlacementMapSVG(exportTheme){
   const legend=[['#1E8A5F','Demand center'],['#7A5195','Compression asset'],['#F2A900','Trailer placement']];
   legend.forEach(([color,label])=>{svg+=`<circle cx="${sbX+28}" cy="${sy-4}" r="7" fill="${color}" stroke="#fff"/><text x="${sbX+48}" y="${sy}" font-size="13" fill="${PAL.TEXT}">${label}</text>`;sy+=30;});
   sy+=14;svg+=`<text x="${sbX+20}" y="${sy}" font-size="13" font-weight="700" fill="${PAL.MUTED}">ASSUMPTIONS</text>`;sy+=30;
-  [`Response radius: ${fmt(S.assetPlacement.targetRadius,0)} mi`,`Max response time: ${fmt(S.assetPlacement.targetHours,1)} h`,`Safety stock: ${fmt(S.assetPlacement.safetyDays,1)} day(s)`,`Simultaneous outages: ${S.assetPlacement.maxNodesDownAll?'All selected nodes':`Up to ${S.assetPlacement.maxNodesDown} nodes`}`].forEach(line=>{svg+=`<text x="${sbX+20}" y="${sy}" font-size="13" fill="${PAL.TEXT}">${esc(line)}</text>`;sy+=26;});
+  [`Response radius: ${fmt(S.assetPlacement.targetRadius,0)} mi`,`Max response time: ${fmt(S.assetPlacement.targetHours,1)} h`,`Safety stock: ${fmt(S.assetPlacement.safetyDays,1)} day(s)`,`Simultaneous outages: ${S.assetPlacement.maxNodesDownAll?'All selected nodes':`Up to ${S.assetPlacement.maxNodesDown} nodes`}`,`Placement basis: ${S.assetPlacement.constrainToDemandNodes?'Best covered demand location':'True optimized centroid'}`].forEach(line=>{svg+=`<text x="${sbX+20}" y="${sy}" font-size="13" fill="${PAL.TEXT}">${esc(line)}</text>`;sy+=26;});
   svg+=`<line x1="36" y1="${VBH-40}" x2="${VBW-36}" y2="${VBH-40}" stroke="${PAL.BORDER}"/><text x="36" y="${VBH-16}" font-size="11.5" fill="${PAL.MUTED}">Generated by HyWeave — ${new Date().toLocaleDateString()}</text><text x="${VBW-36}" y="${VBH-16}" font-size="11.5" fill="${PAL.MUTED}" text-anchor="end">Asset placement recommendation</text></svg>`;
   return svg;
 }
@@ -5953,22 +6414,22 @@ function buildAssetPlacementDetailPageSVG(exportTheme,label,assets,pageNumber=1,
   ];
   const rows=assets.map(a=>[
     {main:a.assetName,sub:a.assetType==='trailer'?`storage ${fmt(a.assetStorageCapacity,0)} ${S.params.unit}`:`compression ${fmt(a.assetCapacity,0)} · storage ${fmt(a.assetStorageCapacity,0)}`},
-    {main:a.cityRef?`${a.cityRef.name}, ${a.cityRef.state}`:'Unnamed area',sub:`${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}`},
+    {main:a.placementDemandNode?a.placementDemandNode.name:'True optimized centroid',sub:a.placementDemandNode?`Selected demand location · ${a.cityRef?`${a.cityRef.name}, ${a.cityRef.state}`:`${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}`}`:`${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}${a.cityRef?` · nearest ${a.cityRef.name}, ${a.cityRef.state}`:''}`},
     {main:a.nearestFacility?a.nearestFacility.name:'—',sub:a.nearestFacility?`${fmt(a.nearestFacilityDist,0)} mi away`:''},
     `${a.covered.length}`,`${fmt(a.coveredDemand)} ${S.params.unit}/day`,
     {main:`${fmt(a.avgDist,0)} mi (${fmtHours(a.avgHours)})`,sub:`max ${fmt(a.maxDist,0)} mi (${fmtHours(a.maxHours)})`},
     {main:a.capacitySufficient?'Sufficient':`Needs ${fmt(a.capacityDetail,0)}`,sub:`Top ${a.simultaneousNodeCount} covered node(s)`},
   ]);
   const pageLabel=totalPages>1?` — Page ${pageNumber} of ${totalPages}`:'';
-  return buildTablePageSVG(exportTheme,`${label} Placement Plan`,`${assets.length} placement row(s) · ${fmt(S.assetPlacement.targetRadius,0)}mi / ${fmt(S.assetPlacement.targetHours,1)}h · ${S.assetPlacement.maxNodesDownAll?'all nodes':`up to ${S.assetPlacement.maxNodesDown} nodes`} down${pageLabel}`,columns,rows);
+  return buildTablePageSVG(exportTheme,`${label} Placement Plan`,`${assets.length} placement row(s) · ${fmt(S.assetPlacement.targetRadius,0)}mi / ${fmt(S.assetPlacement.targetHours,1)}h · ${S.assetPlacement.maxNodesDownAll?'all nodes':`up to ${S.assetPlacement.maxNodesDown} nodes`} down · ${S.assetPlacement.constrainToDemandNodes?'demand-location constrained':'centroid based'}${pageLabel}`,columns,rows);
 }
 
 function exportAssetPlacementCsv(){
   if(!lastAssetPlacementComputed){alert('View Asset Placement Results first.');return;}
   const q=value=>`"${String(value==null?'':value).replace(/"/g,'""')}"`;
-  const rows=[['Category','Assigned Asset','Asset Type','Proposed Location','State','Latitude','Longitude','Nearest Facility','Nearest Facility Distance (mi)','DCs Covered','Covered DC Names','Coverage Demand','Simultaneous Nodes Used','Simultaneous Node Names','Simultaneous Demand','Maximum Nodes Down Setting','Avg Reach (mi)','Avg Reach Time','Max Reach (mi)','Max Reach Time','Available Capacity','Required Capacity','Capacity Status','Reach Status']];
+  const rows=[['Category','Assigned Asset','Asset Type','Placement Mode','Demand Location','Proposed Location','State','Latitude','Longitude','Nearest Facility','Nearest Facility Distance (mi)','DCs Covered','Covered DC Names','Coverage Demand','Simultaneous Nodes Used','Simultaneous Node Names','Simultaneous Demand','Maximum Nodes Down Setting','Avg Reach (mi)','Avg Reach Time','Max Reach (mi)','Max Reach Time','Available Capacity','Required Capacity','Capacity Status','Reach Status']];
   const add=(category,a)=>rows.push([
-    category,a.assetName,a.assetType,a.cityRef?a.cityRef.name:'Unnamed area',a.cityRef?a.cityRef.state:'',a.lat.toFixed(5),a.lon.toFixed(5),
+    category,a.assetName,a.assetType,a.placementDemandNode?'Demand location constrained':'True optimized centroid',a.placementDemandNode?a.placementDemandNode.name:'',a.placementDemandNode&&a.cityRef?a.cityRef.name:(a.placementDemandNode?'':'True optimized centroid'),a.placementDemandNode&&a.cityRef?a.cityRef.state:'',a.lat.toFixed(5),a.lon.toFixed(5),
     a.nearestFacility?a.nearestFacility.name:'',a.nearestFacility?fmt(a.nearestFacilityDist,1):'',a.covered.length,a.covered.map(n=>n.name).join('; '),
     fmt(a.coveredDemand,1),a.simultaneousNodeCount,a.simultaneousNodes.map(n=>n.name).join('; '),fmt(a.simultaneousDemand,1),S.assetPlacement.maxNodesDownAll?'All selected nodes':S.assetPlacement.maxNodesDown,
     fmt(a.avgDist,1),fmtHours(a.avgHours),fmt(a.maxDist,1),fmtHours(a.maxHours),
@@ -6106,6 +6567,7 @@ function attachHandlers(){
   const btnSaveDemand = document.getElementById('btnSaveDemand');
   if(btnSaveDemand) btnSaveDemand.addEventListener('click', ()=>{
     const name = document.getElementById('fName').value.trim();
+    const company = document.getElementById('fCompany').value.trim();
     const city = document.getElementById('fCity').value.trim();
     const lat = parseFloat(document.getElementById('fLat').value);
     const lon = parseFloat(document.getElementById('fLon').value);
@@ -6115,10 +6577,10 @@ function attachHandlers(){
     if(!name||isNaN(lat)||isNaN(lon)||isNaN(rate)){ alert('Please fill in name, latitude, longitude, and consumption rate.'); return; }
     if(S.demandForm){
       const n = S.demand.find(x=>x.id===S.demandForm);
-      Object.assign(n,{name,city,lat,lon,rate,safetyDays,status});
+      Object.assign(n,{name,company,city,lat,lon,rate,safetyDays,status});
       S.demandForm=null;
     } else {
-      S.demand.push({id:uid(), name, city, lat, lon, rate, safetyDays, status, enabled:true});
+      S.demand.push({id:uid(), name, company, city, lat, lon, rate, safetyDays, status, enabled:true});
     }
     render();
   });
@@ -6131,7 +6593,28 @@ function attachHandlers(){
     el.indeterminate=selected>0&&selected<total;
     el.addEventListener('change',()=>{
       const group=el.dataset.demandGroupToggle;
-      S.demand.filter(n=>((n.status||'current')==='future'?'future':'current')===group).forEach(n=>{n.enabled=el.checked;});
+      S.demand.filter(n=>demandStatusGroup(n)===group).forEach(n=>{n.enabled=el.checked;});
+      render();
+    });
+  });
+  document.querySelectorAll('.demand-region-check').forEach(el=>{
+    el.addEventListener('change',()=>{
+      const region=el.dataset.demandRegionToggle;
+      const activeRegions=new Set(S.demandRegionSelections||[]);
+      if(el.checked) activeRegions.add(region);
+      else activeRegions.delete(region);
+      S.demandRegionSelections=[...activeRegions];
+      S.demand.filter(n=>demandNodeInRegion(n,region)).forEach(n=>{n.enabled=el.checked;});
+      render();
+    });
+  });
+  document.querySelectorAll('.demand-company-check').forEach(el=>{
+    const selected=parseInt(el.dataset.selected||'0',10);
+    const total=parseInt(el.dataset.total||'0',10);
+    el.indeterminate=selected>0&&selected<total;
+    el.addEventListener('change',()=>{
+      const companyKey=decodeURIComponent(el.dataset.demandCompany||'');
+      S.demand.filter(n=>String(n.company||'').trim().toLocaleLowerCase()===companyKey).forEach(n=>{n.enabled=el.checked;});
       render();
     });
   });
@@ -6160,6 +6643,7 @@ function attachHandlers(){
   const btnSaveSupply = document.getElementById('btnSaveSupply');
   if(btnSaveSupply) btnSaveSupply.addEventListener('click', ()=>{
     const name = document.getElementById('fSName').value.trim();
+    const company = document.getElementById('fSCompany').value.trim();
     const city = document.getElementById('fSCity').value.trim();
     const lat = parseFloat(document.getElementById('fSLat').value);
     const lon = parseFloat(document.getElementById('fSLon').value);
@@ -6169,14 +6653,17 @@ function attachHandlers(){
     const highPressureCapable = document.getElementById('fSHighPressure').checked;
     const lowPressureCapable = document.getElementById('fSLowPressure').checked;
     const isWmtTransfill = document.getElementById('fSWmtTransfill').checked;
+    const isIH = document.getElementById('fSIH').checked;
     if(!name||isNaN(lat)||isNaN(lon)||isNaN(capacity)||isNaN(cost)){ alert('Please fill in name, latitude, longitude, capacity, and cost.'); return; }
     if(!highPressureCapable&&!lowPressureCapable){ alert('A supply source must be capable of at least one pressure level.'); return; }
     if(S.supplyForm){
       const n = S.supply.find(x=>x.id===S.supplyForm);
-      Object.assign(n,{name,city,lat,lon,capacity,cost,status,highPressureCapable,lowPressureCapable,isWmtTransfill});
+      Object.assign(n,{name,company,city,lat,lon,capacity,cost,status,highPressureCapable,lowPressureCapable,isWmtTransfill,isIH});
       S.supplyForm=null;
     } else {
-      S.supply.push({id:uid(), name, city, lat, lon, capacity, cost, status, highPressureCapable, lowPressureCapable, isWmtTransfill, enabled:true});
+      const id=uid();
+      S.supply.push({id, name, company, city, lat, lon, capacity, cost, status, highPressureCapable, lowPressureCapable, isWmtTransfill, isIH, enabled:true});
+      S.supplySavingsCandidateIds=Array.from(new Set([...(S.supplySavingsCandidateIds||[]),id]));
     }
     render();
   });
@@ -6199,6 +6686,18 @@ function attachHandlers(){
       render();
     });
   });
+  document.querySelectorAll('.supply-company-check').forEach(el=>{
+    const selected=parseInt(el.dataset.selected||'0',10);
+    const total=parseInt(el.dataset.total||'0',10);
+    el.indeterminate=selected>0&&selected<total;
+    el.addEventListener('change',()=>{
+      const companyKey=decodeURIComponent(el.dataset.supplyCompany||'');
+      S.supply.filter(s=>String(s.company||'').trim().toLocaleLowerCase()===companyKey).forEach(s=>{s.enabled=el.checked;});
+      S.params.includeFuture=S.supply.some(s=>sourceMatchesGroup(s,'future')&&supplySourceSelected(s));
+      S.params.includeWmtTransfill=S.supply.some(s=>sourceMatchesGroup(s,'wmt')&&supplySourceSelected(s));
+      render();
+    });
+  });
   document.querySelectorAll('.supply-source-check').forEach(el=>el.addEventListener('change',()=>{
     const source=S.supply.find(s=>s.id===el.dataset.toggleSupply);
     if(!source) return;
@@ -6215,7 +6714,21 @@ function attachHandlers(){
     render();
   });
 
-  document.querySelectorAll('[data-edit-supply]').forEach(b=>b.addEventListener('click', ()=>{ S.supplyForm=b.dataset.editSupply; render(); }));
+  document.querySelectorAll('[data-edit-supply]').forEach(b=>b.addEventListener('click', ()=>{
+    S.supplyForm=b.dataset.editSupply;
+    render();
+    // The editor sits above a potentially long imported-source table. Bring it into view and
+    // focus molecule price so the Edit action is immediately visible and ready to use.
+    requestAnimationFrame(()=>{
+      const editor=document.getElementById('supplySourceEditor');
+      if(editor) editor.scrollIntoView({behavior:'smooth',block:'start'});
+      const moleculeCost=document.getElementById('fSCost');
+      if(moleculeCost){
+        moleculeCost.focus({preventScroll:true});
+        moleculeCost.select();
+      }
+    });
+  }));
   document.querySelectorAll('[data-del-supply]').forEach(b=>b.addEventListener('click', ()=>{
     if(confirm('Delete this supply source?')){
       S.supply = S.supply.filter(n=>n.id!==b.dataset.delSupply);
@@ -6361,6 +6874,14 @@ function attachHandlers(){
     render();
   };
   [assetRecTargetRadius,assetRecTargetHours,assetRecSafetyDays,assetRecMaxNodesDown].filter(Boolean).forEach(el=>el.addEventListener('change',applyAssetRecommendationTargets));
+  const assetRecConstrainDemandNodes=document.getElementById('assetRecConstrainDemandNodes');
+  if(assetRecConstrainDemandNodes) assetRecConstrainDemandNodes.addEventListener('change',(e)=>{
+    S.params.assetPlacementAtDemandNodes=e.target.checked;
+    syncAssetPlacementTargets();
+    lastAssetPlacementComputed=null;
+    assetMapViewBox=null;
+    render();
+  });
   const pHycasRadius = document.getElementById('pHycasRadius');
   if(pHycasRadius) pHycasRadius.addEventListener('input', (e)=>{ document.getElementById('pHycasRadiusVal').textContent = e.target.value+' mi'; });
   const pHycasHours = document.getElementById('pHycasHours');
@@ -6720,10 +7241,54 @@ function attachHandlers(){
     lastMultiComparison=computeMultiSourceComparison(sourceIds,nodeIds,days);
     render();
   });
+  const btnRunSupplySavings=document.getElementById('btnRunSupplySavings');
+  const candidateSavingsChecks=Array.from(document.querySelectorAll('.supplySavingsCandidateList-item'));
+  const excludedSavingsChecks=Array.from(document.querySelectorAll('.supplySavingsExcludedSourceList-item'));
+  candidateSavingsChecks.forEach(checkbox=>checkbox.addEventListener('change',()=>{
+    if(checkbox.checked){const counterpart=excludedSavingsChecks.find(other=>other.value===checkbox.value);if(counterpart) counterpart.checked=false;}
+  }));
+  excludedSavingsChecks.forEach(checkbox=>checkbox.addEventListener('change',()=>{
+    if(checkbox.checked){const counterpart=candidateSavingsChecks.find(other=>other.value===checkbox.value);if(counterpart) counterpart.checked=false;}
+  }));
+  const btnSelectFutureSavingsExclusions=document.getElementById('btnSelectFutureSavingsExclusions');
+  if(btnSelectFutureSavingsExclusions) btnSelectFutureSavingsExclusions.addEventListener('click',()=>{
+    const candidateIds=new Set(candidateSavingsChecks.filter(checkbox=>checkbox.checked).map(checkbox=>checkbox.value));
+    excludedSavingsChecks.forEach(checkbox=>{if(checkbox.dataset.future==='true'&&!candidateIds.has(checkbox.value)) checkbox.checked=true;});
+  });
+  const chkSupplySavingsPriceOverride=document.getElementById('chkSupplySavingsPriceOverride');
+  const fSupplySavingsPriceOverride=document.getElementById('fSupplySavingsPriceOverride');
+  if(chkSupplySavingsPriceOverride&&fSupplySavingsPriceOverride) chkSupplySavingsPriceOverride.addEventListener('change',()=>{
+    fSupplySavingsPriceOverride.disabled=!chkSupplySavingsPriceOverride.checked;
+    if(chkSupplySavingsPriceOverride.checked) fSupplySavingsPriceOverride.focus();
+  });
+  if(btnRunSupplySavings) btnRunSupplySavings.addEventListener('click',()=>{
+    const candidateIds=Array.from(document.querySelectorAll('.supplySavingsCandidateList-item:checked')).map(el=>el.value);
+    const excludedIds=Array.from(document.querySelectorAll('.supplySavingsExcludedSourceList-item:checked')).map(el=>el.value);
+    const nodeIds=Array.from(document.querySelectorAll('.supplySavingsNodeList-item:checked')).map(el=>el.value);
+    const days=parseFloat(document.getElementById('fSupplySavingsDays').value);
+    const useExistingPriceOverride=!!(chkSupplySavingsPriceOverride&&chkSupplySavingsPriceOverride.checked);
+    const existingPriceOverride=fSupplySavingsPriceOverride?parseFloat(fSupplySavingsPriceOverride.value):NaN;
+    const availableSources=activeSupply();
+    if(candidateIds.length===0){ alert('Choose at least one new or candidate supply source.'); return; }
+    const unavailableIds=new Set([...candidateIds,...excludedIds]);
+    if(availableSources.every(source=>unavailableIds.has(source.id))){ alert('Leave at least one existing supply source available in the baseline.'); return; }
+    if(nodeIds.length===0){ alert('Choose at least one demand node to evaluate.'); return; }
+    if(!Number.isFinite(days)||days<=0){ alert('Enter a valid evaluation period in days.'); return; }
+    if(useExistingPriceOverride&&(!Number.isFinite(existingPriceOverride)||existingPriceOverride<0)){ alert('Enter a valid global existing-source price of zero or greater.'); return; }
+    S.supplySavingsCandidateIds=candidateIds;
+    S.supplySavingsExcludedSourceIds=excludedIds;
+    S.supplySavingsNodeIds=nodeIds;
+    S.supplySavingsDays=days;
+    S.supplySavingsUseExistingPriceOverride=useExistingPriceOverride;
+    S.supplySavingsExistingPriceOverride=useExistingPriceOverride?existingPriceOverride:null;
+    lastSupplySavings=computeSupplyAdditionSavings(candidateIds,excludedIds,nodeIds,days,useExistingPriceOverride?existingPriceOverride:null);
+    render();
+  });
   const btnClearScenarioResults=document.getElementById('btnClearScenarioResults');
   if(btnClearScenarioResults) btnClearScenarioResults.addEventListener('click',()=>{
     lastScenario=null;
     lastMultiComparison=null;
+    lastSupplySavings=null;
     render();
   });
   document.querySelectorAll('.multiComparePriceField').forEach(field=>field.addEventListener('change',()=>{
@@ -6770,7 +7335,7 @@ function attachHandlers(){
   const lnkLoadDifferentScenario = document.getElementById('lnkLoadDifferentScenario');
   if(lnkLoadDifferentScenario) lnkLoadDifferentScenario.addEventListener('click', (e)=>{
     e.preventDefault();
-    S.demand = []; S.supply = []; lastScenario = null;
+    S.demand = []; S.supply = []; S.demandRegionSelections = []; lastScenario = null;
     render();
   });
   const fNotifyEmail = document.getElementById('fNotifyEmail');
@@ -6870,7 +7435,7 @@ document.querySelectorAll('nav.tabs button').forEach(b=>{
 });
 /* PORTAL_BLOCK_START */
 const btnSampleTop = document.getElementById('btnSample');
-if(btnSampleTop) btnSampleTop.addEventListener('click', ()=>{ sampleData(); lastScenario=null; lastMultiComparison=null; S.activeTab='results'; render(); });
+if(btnSampleTop) btnSampleTop.addEventListener('click', ()=>{ sampleData(); lastScenario=null; lastMultiComparison=null; lastSupplySavings=null; S.activeTab='results'; render(); });
 /* PORTAL_BLOCK_END */
 const themeSelectTop = document.getElementById('themeSelect');
 if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e.target.value); });
@@ -6878,9 +7443,10 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,maxNodesDownAll:true}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,assetPlacementAtDemandNodes:false,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, demandRegionSelections:[], supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, supplySavingsCandidateIds:[], supplySavingsExcludedSourceIds:[], supplySavingsNodeIds:[], supplySavingsDays:365, supplySavingsUseExistingPriceOverride:false, supplySavingsExistingPriceOverride:null, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,maxNodesDownAll:true,constrainToDemandNodes:false}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
     lastScenario = null;
     lastMultiComparison = null;
+    lastSupplySavings = null;
     render();
   }
 });
@@ -6896,6 +7462,14 @@ if(btnSaveScenarioTop) btnSaveScenarioTop.addEventListener('click', ()=>{
     params: S.params,
     distanceOverrides: S.distanceOverrides,
     exportBranding: S.exportBranding,
+    scenarioPlanning: {
+      supplySavingsCandidateIds: S.supplySavingsCandidateIds||[],
+      supplySavingsExcludedSourceIds: S.supplySavingsExcludedSourceIds||[],
+      supplySavingsNodeIds: S.supplySavingsNodeIds||[],
+      supplySavingsDays: S.supplySavingsDays||365,
+      supplySavingsUseExistingPriceOverride: !!S.supplySavingsUseExistingPriceOverride,
+      supplySavingsExistingPriceOverride: S.supplySavingsExistingPriceOverride,
+    },
     results: lastComputed ? {
       kpi: lastComputed.kpi,
       hubs: lastComputed.hubs.map(h=>({
@@ -6951,19 +7525,21 @@ function applyScenarioFile(file, onDone){
     try{
       const data = JSON.parse(ev.target.result);
       if(!Array.isArray(data.demand) || !Array.isArray(data.supply)) throw new Error('File does not look like a saved scenario (missing demand/supply arrays).');
-      const defaults = {trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false,};
+      const defaults = {trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,assetPlacementAtDemandNodes:false,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false,};
+      S.demandRegionSelections = [];
       S.demand = data.demand.map(n=>({
-        id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon),
+        id:n.id||uid(), name:n.name, company:String(n.company||''), city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon),
         rate:parseFloat(n.rate), safetyDays:parseFloat(n.safetyDays)||defaults.safetyDays,
-        status:n.status==='future'?'future':'current',
+        status:normalizeDemandStatus(n.status),
         enabled:typeof n.enabled==='boolean'?n.enabled:true,
       }));
       S.supply = data.supply.map(n=>({
-        id:n.id||uid(), name:n.name, city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon),
+        id:n.id||uid(), name:n.name, company:String(n.company||''), city:n.city||'', lat:parseFloat(n.lat), lon:parseFloat(n.lon),
         capacity:parseFloat(n.capacity), cost:parseFloat(n.cost), status:(n.status==='future'?'future':'current'),
         highPressureCapable:n.highPressureCapable!==false,
         lowPressureCapable:n.lowPressureCapable!==false,
         isWmtTransfill:!!n.isWmtTransfill,
+        isIH:typeof n.isIH==='boolean'?n.isIH:undefined,
         enabled:typeof n.enabled==='boolean'?n.enabled:undefined,
       }));
       S.params = Object.assign({}, defaults, data.params||{});
@@ -7007,8 +7583,16 @@ function applyScenarioFile(file, onDone){
       }
       S.demandForm=null; S.supplyForm=null;
       S.multiComparePrices={};
+      const savedScenarioPlanning=data.scenarioPlanning&&typeof data.scenarioPlanning==='object'?data.scenarioPlanning:{};
+      S.supplySavingsCandidateIds=Array.isArray(savedScenarioPlanning.supplySavingsCandidateIds)?savedScenarioPlanning.supplySavingsCandidateIds:[];
+      S.supplySavingsExcludedSourceIds=Array.isArray(savedScenarioPlanning.supplySavingsExcludedSourceIds)?savedScenarioPlanning.supplySavingsExcludedSourceIds:[];
+      S.supplySavingsNodeIds=Array.isArray(savedScenarioPlanning.supplySavingsNodeIds)?savedScenarioPlanning.supplySavingsNodeIds:[];
+      S.supplySavingsDays=Number(savedScenarioPlanning.supplySavingsDays)>0?Number(savedScenarioPlanning.supplySavingsDays):365;
+      S.supplySavingsUseExistingPriceOverride=!!savedScenarioPlanning.supplySavingsUseExistingPriceOverride;
+      S.supplySavingsExistingPriceOverride=savedScenarioPlanning.supplySavingsExistingPriceOverride!==null&&savedScenarioPlanning.supplySavingsExistingPriceOverride!==''&&Number.isFinite(Number(savedScenarioPlanning.supplySavingsExistingPriceOverride))?Number(savedScenarioPlanning.supplySavingsExistingPriceOverride):null;
       lastScenario=null;
       lastMultiComparison=null;
+      lastSupplySavings=null;
       onDone(null, data);
     } catch(err){
       onDone(err, null);
