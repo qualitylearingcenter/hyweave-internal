@@ -121,6 +121,9 @@
 
   .maplegend{position:absolute;bottom:14px;left:14px;background:var(--legend-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:11px;box-shadow:0 2px 8px var(--shadow);color:var(--text);}
   .maplegend .item{display:flex;align-items:center;gap:6px;margin:3px 0;}
+  .mapcoverage{position:absolute;right:14px;bottom:14px;background:var(--legend-bg);border:1px solid var(--border);border-radius:8px;padding:9px 13px;font-size:12px;box-shadow:0 2px 8px var(--shadow);color:var(--text);font-weight:700;}
+  .mapcoverage .muted{display:block;color:var(--muted);font-size:10px;font-weight:600;margin-top:2px;}
+  .map-export-option{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);font-weight:600;white-space:nowrap;}
   .mapwrap{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
   .mapwrap.network-map-primary{width:100%;max-width:1440px;margin:0 auto;aspect-ratio:16/9;min-height:480px;background:var(--map-bg);}
   .mapwrap.network-map-primary>svg{display:block;width:100%;height:100%;background:var(--map-bg);}
@@ -771,7 +774,7 @@ let S = {
   realEstate: [], showRealEstateOverlay: true,
   aiChatOpen: false, aiChatMessages: [], aiChatBusy: false,
   exportBranding: { companyLogo: null, companyLogoName: '', customerLogo: null, customerLogoName: '', customerName: '' },
-  assetPlacement: { safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, maxNodesDownAll:true, constrainToDemandNodes:false },
+  assetPlacement: { safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, maxNodesDownAll:true, constrainToDemandNodes:false, demandNodeIds:null },
   distanceOverrides: [],
   pricing: { mode:'lease', trailerPrice: 1000000, hycasPrice: 3500000, nodePrice: 0,
              trailerLeaseRate: 22000, hycasLeaseRate: 73000, nodeLeaseRate: 0, leaseTermMonths: 60,
@@ -1360,6 +1363,7 @@ function sampleData(){
     {id:uid(), name:'Planned Beaumont H2 Plant (2027)', city:'Beaumont, TX', lat:30.0802, lon:-94.1266, capacity:1500, cost:2.05, status:'future'},
   ];
   S.params = { trailerCap:750, trailerCapacities:[], costPerMile:6, avgSpeed:48, safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, assetPlacementAtDemandNodes:false, unit:'kg', includeFuture:true, includeWmtTransfill:false, hycasRadius:400, hycasHours:8, hycasCapacity:1000, hycasHasOnboardStorage:true, hycasStorageCapacity:50, hycasCoLocateTrailer:false };
+  S.assetPlacement = { safetyDays:1.5, targetRadius:250, targetHours:8, maxNodesDown:0, maxNodesDownAll:true, constrainToDemandNodes:false, demandNodeIds:null };
   S.supplySavingsCandidateIds=[];
   S.supplySavingsExcludedSourceIds=[];
   S.supplySavingsNodeIds=[];
@@ -1403,6 +1407,20 @@ function activeSupply(){
 
 function demandNodeSelected(n){
   return n.enabled!==false;
+}
+
+function assetRecommendationDemandNodeSelected(n){
+  const ids=S.assetPlacement&&Array.isArray(S.assetPlacement.demandNodeIds)?S.assetPlacement.demandNodeIds:null;
+  return demandNodeSelected(n) && (!ids || ids.includes(n.id));
+}
+
+function assetRecommendationDemand(){
+  return S.demand.filter(assetRecommendationDemandNodeSelected);
+}
+
+function assetRecommendationDemandIds(){
+  const ids=S.assetPlacement&&Array.isArray(S.assetPlacement.demandNodeIds)?S.assetPlacement.demandNodeIds:null;
+  return ids||activeDemand().map(n=>n.id);
 }
 
 const DEMAND_REGION_DEFS = [
@@ -1879,8 +1897,9 @@ function nearestExistingFacility(lat,lon,excludeId){
   return {facility:best,dist:bestDist};
 }
 
-function assignDemandToPlacementSites(sites){
-  return activeDemand().map(n=>{
+function assignDemandToPlacementSites(sites,demandList){
+  const demand=demandList||activeDemand();
+  return demand.map(n=>{
     let best=0, bestDist=Infinity;
     sites.forEach((site,i)=>{
       const d=haversineMiles(n.lat,n.lon,site.lat,site.lon);
@@ -2270,15 +2289,15 @@ function constrainAssetSitesToDemandNodes(sites, assign, demand, baseRisk){
   });
 }
 
-function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays, maxNodesDown, constrainToDemandNodes){
-  const demand=activeDemand();
+function buildAssetPlacementForType(baseRisk, assetList, assetType, safetyDays, maxNodesDown, constrainToDemandNodes, demandList){
+  const demand=demandList||activeDemand();
   if(demand.length===0 || assetList.length===0) return [];
   const k = Math.max(1, Math.min(assetList.length, demand.length));
   const pts = demand.map(n=>albersXY(n.lat,n.lon));
   const weights = demand.map(n=> Math.max(baseRisk[n.id].score,0.01));
   const {centers} = weightedKMeans(pts, weights, k, 60);
   let sites = placementCentroidSites(centers);
-  const assign = assignDemandToPlacementSites(sites);
+  const assign = assignDemandToPlacementSites(sites,demand);
   if(constrainToDemandNodes) sites=constrainAssetSitesToDemandNodes(sites,assign,demand,baseRisk);
 
   const clusters = sites.map((site, ci)=>{
@@ -2340,10 +2359,11 @@ function syncAssetPlacementTargets(){
     const n=Number(value);
     return Number.isFinite(n)&&n>0?n:fallback;
   };
-  const demandCount=Math.max(1,activeDemand().length);
+  const demandCount=Math.max(1,assetRecommendationDemand().length);
   const requestedNodes=Math.floor(Number(S.params.maxNodesDown));
   const maxNodesDownAll=!Number.isFinite(requestedNodes)||requestedNodes<=0||requestedNodes>=demandCount;
   const maxNodesDown=maxNodesDownAll?demandCount:Math.max(1,requestedNodes);
+  const priorDemandNodeIds=S.assetPlacement&&Array.isArray(S.assetPlacement.demandNodeIds)?S.assetPlacement.demandNodeIds:null;
   const targets={
     safetyDays:positiveOr(S.params.safetyDays,1.5),
     targetRadius:positiveOr(S.params.targetRadius,250),
@@ -2363,12 +2383,13 @@ function syncAssetPlacementTargets(){
   // assumption set to all instead of freezing it at the old node count.
   S.params.maxNodesDown=maxNodesDownAll?0:maxNodesDown;
   S.params.assetPlacementAtDemandNodes=targets.constrainToDemandNodes;
-  S.assetPlacement={...targets};
+  S.assetPlacement={...targets,demandNodeIds:priorDemandNodeIds};
   return targets;
 }
 
 function computeAssetPlacement(){
-  if(activeDemand().length===0) return {
+  const demand=assetRecommendationDemand();
+  if(demand.length===0) return {
     compression: { assets:[], achievedMaxDist:0, achievedMaxHours:0, withinTarget:true, anyCapacityShortfall:false },
     storage: { assets:[], achievedMaxDist:0, achievedMaxHours:0, withinTarget:true, anyCapacityShortfall:false },
   };
@@ -2378,7 +2399,7 @@ function computeAssetPlacement(){
 
   function forType(type){
     const list = expandedAssetsForPlacement(type);
-    const assets = buildAssetPlacementForType(baseRisk, list, type, ap.safetyDays, ap.maxNodesDown, ap.constrainToDemandNodes);
+    const assets = buildAssetPlacementForType(baseRisk, list, type, ap.safetyDays, ap.maxNodesDown, ap.constrainToDemandNodes, demand);
     // Asset Placement has no auto-search loop (the count is fixed by inventory), so real reach
     // can be applied directly to whatever the clustering+matching step produced.
     applyPlacementReach(assets, a => ({lat:a.lat, lon:a.lon}));
@@ -4205,6 +4226,9 @@ function renderResultsTab(){
   lastComputed = {sourcing, risk, hubs, hubPlan, kpi, hycasPlan, hycasUnits};
 
   const supply = activeSupply();
+  const proposedCoverageIds = new Set(hubs.flatMap(h=>(h.covered||[]).map(n=>n.id)));
+  const eligibleCoverageDemand = activeDemand().filter(n=>!assignedSourceDistanceOutlier(n.id, sourcing));
+  const proposedCoverageCount = eligibleCoverageDemand.filter(n=>proposedCoverageIds.has(n.id)).length;
   const futureCount = S.supply.filter(s=>(s.status||'current')==='future').length;
   const selectedFutureCount = S.supply.filter(s=>(s.status||'current')==='future' && supplySourceSelected(s)).length;
 
@@ -4246,7 +4270,10 @@ function renderResultsTab(){
           <option value="light" ${THEME!=='dark'?'selected':''}>☀ Light export</option>
           <option value="dark" ${THEME==='dark'?'selected':''}>🌙 Dark export</option>
         </select>
-        <button class="btn btn-small btn-outline" id="btnExportMapImg">⬇ Export Map + Operational PDF + Sourcing PDF</button>
+        <label class="map-export-option"><input type="checkbox" id="chkExportNetworkMap" checked> Map image</label>
+        <label class="map-export-option"><input type="checkbox" id="chkExportOperationalPdf" checked> Operational PDF</label>
+        <label class="map-export-option"><input type="checkbox" id="chkExportSourcingPdf" checked> Sourcing PDF</label>
+        <button class="btn btn-small btn-outline" id="btnExportMapImg">⬇ Download selected</button>
       </div>
     </div>
     <div class="toolbar">
@@ -4280,6 +4307,8 @@ function renderResultsTab(){
         ${publicHydrogenStations.length?'<div class="item"><span class="swatch" style="background:#00A6A6;border:2px solid #fff;box-shadow:0 0 0 1px #007C7C"></span>Public hydrogen station (NREL)</div>':''}
         ${S.showHycasRadius?`<div class="item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:1.3px dashed #7A5195;background:rgba(122,81,149,.05);margin-right:6px;vertical-align:middle"></span>HyCAS response radius (${fmt(S.params.hycasRadius,0)} mi)</div>`:''}
       </div>
+      <div class="mapcoverage" aria-label="Demand node coverage"><span>${proposedCoverageCount} of ${eligibleCoverageDemand.length} eligible demand nodes covered</span><span class="muted">Proposed supply plan · red-dot outliers excluded</span></div>
+      <div class="mapcoverage" aria-label="Demand node coverage"><span>${proposedCoverageCount} of ${eligibleCoverageDemand.length} eligible demand nodes covered</span><span class="muted">Proposed supply plan · red-dot outliers excluded</span></div>
       <div class="maptooltip" id="mapTooltip"></div>
     </div>
     <div class="note">Node size = consumption rate. Line thickness = allocated flow volume. Diamond markers are proposed staging locations at the nearest town center to each calculated cluster centroid. Solid circles show your configured <b>Target Delivery Radius</b> (${fmt(S.params.targetRadius,0)} mi), the same for every hub. Public hydrogen stations are context only and are not assumed to have available commercial capacity.</div>
@@ -5045,7 +5074,10 @@ function renderAssetPlacementRecommendationTab(){
   if(activeDemand().length===0) return `<div class="card"><div class="empty">Select demand nodes before generating an asset placement recommendation.</div></div>`;
   if(S.assets.length===0) return `<div class="card"><div class="empty">Add assets on the Asset Placement tab or drop an asset file into Input Parameters.</div></div>`;
   const ap=syncAssetPlacementTargets();
-  const activeNodeCount=Math.max(1,activeDemand().length);
+  const availableDemand=activeDemand();
+  const selectedAssetDemandIds=assetRecommendationDemandIds();
+  const selectedAssetDemand=assetRecommendationDemand();
+  const activeNodeCount=Math.max(1,selectedAssetDemand.length);
   const outageLabel=ap.maxNodesDownAll?`all ${activeNodeCount} selected nodes`:`up to ${ap.maxNodesDown} nodes`;
   const result=computeAssetPlacement();
   lastAssetPlacementComputed=result;
@@ -5069,6 +5101,23 @@ function renderAssetPlacementRecommendationTab(){
         <td>${a.capacitySufficient?'<span class="tag tag-low">Sufficient</span>':`<span class="tag tag-high">Needs ${fmt(a.capacityDetail,0)} ${esc(capacityLabel)}</span>`}<br><span style="color:var(--muted);font-size:10.5px">Top ${a.simultaneousNodeCount} covered node(s)</span></td>
       </tr>`).join('')}</tbody></table>
     </div>`;
+  }
+  function assetRegionToggle(region){
+    const list=availableDemand.filter(n=>demandNodeInRegion(n,region.key));
+    const selected=list.filter(n=>selectedAssetDemandIds.includes(n.id)).length;
+    return `<label title="Select every available demand node in ${esc(region.label)} for this recommendation" style="display:flex;align-items:center;gap:8px;border:1px solid ${selected?'var(--green)':'var(--border)'};border-radius:8px;padding:9px 10px;background:var(--note-bg);font-size:12px;font-weight:600;color:${selected?'var(--green)':'var(--muted)'};cursor:${list.length?'pointer':'default'}">
+      <input type="checkbox" class="asset-rec-region-check" data-asset-rec-region="${region.key}" ${list.length&&selected===list.length?'checked':''} ${list.length?'':'disabled'} style="width:17px;height:17px;cursor:${list.length?'pointer':'default'};flex:0 0 auto">
+      <span>${esc(region.label)} <span style="font-weight:500;color:var(--muted)">(${selected}/${list.length})</span></span>
+    </label>`;
+  }
+  function assetDemandChecklist(){
+    if(!availableDemand.length) return '<div class="empty" style="padding:18px">No demand nodes are currently active.</div>';
+    const rows=[...availableDemand].sort((a,b)=>naturalCompare(a.name,b.name)).map(n=>`
+      <label style="display:flex;align-items:center;gap:8px;padding:7px 8px;border-bottom:1px solid var(--border);font-size:12px;cursor:pointer">
+        <input type="checkbox" class="asset-rec-node-check" value="${n.id}" ${selectedAssetDemandIds.includes(n.id)?'checked':''} style="width:16px;height:16px;cursor:pointer;flex:0 0 auto">
+        <span><b>${esc(n.name)}</b>${n.city?` <span style="color:var(--muted)">· ${esc(n.city)}</span>`:''} <span style="color:var(--muted)">· ${fmt(n.rate)} ${S.params.unit}/day</span></span>
+      </label>`).join('');
+    return `<div style="border:1px solid var(--border);border-radius:8px;max-height:230px;overflow:auto;background:var(--panel)">${rows}</div>`;
   }
   return `
     <div class="card">
@@ -5105,6 +5154,24 @@ function renderAssetPlacementRecommendationTab(){
         </div>
       </div>
       <div class="note" style="margin-top:4px">The displayed value updates while you drag. The placement recommendation, reach checks, map radius, and capacity checks refresh when you release the slider. Selecting the highest outage value means all currently selected nodes.</div>
+    </div>
+    <div class="card">
+      <div class="flexbetween" style="align-items:flex-start;gap:16px">
+        <div>
+          <h2 style="margin-bottom:3px">Demand Nodes for Placement</h2>
+          <p class="desc" style="margin-bottom:0">Choose the exact demand sites, or use regional shortcuts, for this constrained asset placement recommendation.</p>
+        </div>
+        <span class="tag tag-low" style="white-space:nowrap">${selectedAssetDemand.length} of ${availableDemand.length} selected</span>
+      </div>
+      <div class="toolbar" style="margin-top:12px">
+        <button type="button" class="btn btn-small btn-outline" id="btnAssetRecDemandSelectAll">Select All</button>
+        <button type="button" class="btn btn-small btn-outline" id="btnAssetRecDemandClear">Clear</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin:10px 0 12px">
+        ${DEMAND_REGION_DEFS.map(assetRegionToggle).join('')}
+      </div>
+      ${assetDemandChecklist()}
+      <div class="note" style="margin-top:10px">These selections only affect Asset Placement Recommendation. They do not change the main Demand Nodes tab or the unconstrained Optimization Results sourcing model.</div>
     </div>
     ${calculationReadinessBanner()}
     <div class="kpirow">
@@ -5165,7 +5232,7 @@ function drawAssetRecommendationMap(){
     ...lastAssetPlacementComputed.storage.assets.map(a=>({...a,kind:'storage'})),
   ];
   all.forEach(a=>{const [x,y]=svgXY(a.lat,a.lon);const color=a.kind==='compression'?'#7A5195':'#F2A900';html+=`<circle cx="${x}" cy="${y}" r="${radius}" fill="${color}" fill-opacity=".045" stroke="${color}" stroke-width="1.2" stroke-dasharray="5,3"/>`;});
-  activeDemand().forEach(n=>{const [x,y]=svgXY(n.lat,n.lon);html+=`<circle cx="${x}" cy="${y}" r="5" fill="#1E8A5F" stroke="#fff" stroke-width="1.2" class="asset-demand-marker" data-id="${n.id}" style="cursor:pointer"/>`;});
+  assetRecommendationDemand().forEach(n=>{const [x,y]=svgXY(n.lat,n.lon);html+=`<circle cx="${x}" cy="${y}" r="5" fill="#1E8A5F" stroke="#fff" stroke-width="1.2" class="asset-demand-marker" data-id="${n.id}" style="cursor:pointer"/>`;});
   all.forEach(a=>{
     const [x,y]=svgXY(a.lat,a.lon);
     const key=`${a.kind}:${a.assetId}`;
@@ -5187,7 +5254,7 @@ function drawAssetRecommendationMap(){
   };
   svg.querySelectorAll('.asset-demand-marker').forEach(el=>{
     el.addEventListener('mousemove',evt=>{
-      const node=activeDemand().find(n=>n.id===el.dataset.id);
+      const node=assetRecommendationDemand().find(n=>n.id===el.dataset.id);
       if(node) showTooltip(evt,`<b>${esc(node.name)}</b><br><span class="mut">Demand center</span><br>${fmt(node.rate)} ${S.params.unit}/day`);
     });
     el.addEventListener('mouseleave',()=>tooltip.style.display='none');
@@ -5919,6 +5986,9 @@ function buildPresentationSVG(exportTheme){
   const PAL = PALETTES[exportTheme==='dark' ? 'dark' : 'light'];
   const NAVY=PAL.HEADING, BG=PAL.BG, BORDER=PAL.BORDER, MUTED=PAL.MUTED, TEXT=PAL.TEXT;
   const riskColor = {High:'#C81E33', Med:'#B57500', Low:'#177A4C'};
+  const eligibleDemand = activeDemand().filter(n=>!assignedSourceDistanceOutlier(n.id, sourcing));
+  const coveredIds = new Set(hubs.flatMap(h=>(h.covered||[]).map(n=>n.id)));
+  const coveredEligible = eligibleDemand.filter(n=>coveredIds.has(n.id)).length;
 
   // Map viewport: full-width 16:9 report page between header and footer.
   const mapX=36, mapY=118, mapW=1848, mapH=884;
@@ -6035,6 +6105,8 @@ function buildPresentationSVG(exportTheme){
   });
 
   svg += `</g>`; // end mapClip — nothing after this point is part of the clipped map layer
+  svg += `<rect x="${mapX+mapW-350}" y="${mapY+mapH-58}" width="328" height="36" rx="7" fill="${exportTheme==='dark'?'#171F2B':'#FFFFFF'}" stroke="${BORDER}" opacity="0.95"/>`;
+  svg += `<text x="${mapX+mapW-186}" y="${mapY+mapH-35}" font-size="13" font-weight="700" fill="${TEXT}" text-anchor="middle">${coveredEligible} of ${eligibleDemand.length} eligible demand nodes covered</text>`;
 
   // ---- compact map legend, embedded inside lower-left corner so the map keeps the full page ----
   const legendX = mapX+22, legendY = mapY+mapH-302, legendW = 300, legendH = 280;
@@ -6377,41 +6449,40 @@ async function exportPresentationMap(){
   const exportTheme = themeSel ? themeSel.value : 'light';
   const bg = exportTheme==='dark' ? '#0F1620' : '#F5F6F8';
   const dateStr = new Date().toISOString().slice(0,10);
+  const exportMap = document.getElementById('chkExportNetworkMap')?.checked ?? true;
+  const exportOperational = document.getElementById('chkExportOperationalPdf')?.checked ?? true;
+  const exportSourcing = document.getElementById('chkExportSourcingPdf')?.checked ?? true;
+  if(!exportMap && !exportOperational && !exportSourcing){ alert('Select at least one export type.'); return; }
 
-  const ok1 = await svgToPngDownload(buildPresentationSVG(exportTheme), `h2_network_map_${exportTheme}_${dateStr}.png`, bg);
-  if(!ok1){ alert('Could not render the presentation map image. Your browser may be blocking SVG-to-canvas conversion for this file — try again, or right-click the on-screen map and save it directly as a fallback.'); return; }
+  if(exportMap){
+    const ok1 = await svgToPngDownload(buildPresentationSVG(exportTheme), `h2_network_map_${exportTheme}_${dateStr}.png`, bg);
+    if(!ok1){ alert('Could not render the presentation map image. Your browser may be blocking SVG-to-canvas conversion for this file — try again, or right-click the on-screen map and save it directly as a fallback.'); return; }
+  }
 
   await new Promise(r=>setTimeout(r,350));
   try{
     const perPage=18, operationalPages=[];
-    operationalPages.push(await svgToJpegBytes(buildNetworkSummaryPageSVG(exportTheme),bg));
-    const hubs=lastComputed.hubs||[], hubPageCount=Math.max(1,Math.ceil(hubs.length/perPage));
-    for(let page=0;page<hubPageCount;page++){
-      operationalPages.push(await svgToJpegBytes(buildHubDetailPageSVG(exportTheme,hubs.slice(page*perPage,(page+1)*perPage),page+1,hubPageCount),bg));
+    if(exportOperational){
+      operationalPages.push(await svgToJpegBytes(buildNetworkSummaryPageSVG(exportTheme),bg));
+      const hubs=lastComputed.hubs||[], hubPageCount=Math.max(1,Math.ceil(hubs.length/perPage));
+      for(let page=0;page<hubPageCount;page++) operationalPages.push(await svgToJpegBytes(buildHubDetailPageSVG(exportTheme,hubs.slice(page*perPage,(page+1)*perPage),page+1,hubPageCount),bg));
+      const units=lastComputed.hycasUnits||[], unitPageCount=Math.max(1,Math.ceil(units.length/perPage));
+      for(let page=0;page<unitPageCount;page++) operationalPages.push(await svgToJpegBytes(buildHycasDetailPageSVG(exportTheme,units.slice(page*perPage,(page+1)*perPage),page+1,unitPageCount),bg));
+      const riskNodes=[...activeDemand()].sort((a,b)=>{ const rank={High:2,Med:1,Low:0}; return rank[lastComputed.risk[b.id].tier]-rank[lastComputed.risk[a.id].tier]||naturalCompare(a.name,b.name); });
+      const riskPageCount=Math.max(1,Math.ceil(riskNodes.length/perPage));
+      for(let page=0;page<riskPageCount;page++) operationalPages.push(await svgToJpegBytes(buildRiskPageSVG(exportTheme,riskNodes.slice(page*perPage,(page+1)*perPage),page+1,riskPageCount),bg));
+      downloadBytes(buildPdfFromJpegs(operationalPages),`h2_network_asset_placement_and_risk_${exportTheme}_${dateStr}.pdf`,'application/pdf');
     }
-    const units=lastComputed.hycasUnits||[], unitPageCount=Math.max(1,Math.ceil(units.length/perPage));
-    for(let page=0;page<unitPageCount;page++){
-      operationalPages.push(await svgToJpegBytes(buildHycasDetailPageSVG(exportTheme,units.slice(page*perPage,(page+1)*perPage),page+1,unitPageCount),bg));
-    }
-    const riskNodes=[...activeDemand()].sort((a,b)=>{
-      const rank={High:2,Med:1,Low:0};
-      return rank[lastComputed.risk[b.id].tier]-rank[lastComputed.risk[a.id].tier]||naturalCompare(a.name,b.name);
-    });
-    const riskPageCount=Math.max(1,Math.ceil(riskNodes.length/perPage));
-    for(let page=0;page<riskPageCount;page++){
-      operationalPages.push(await svgToJpegBytes(buildRiskPageSVG(exportTheme,riskNodes.slice(page*perPage,(page+1)*perPage),page+1,riskPageCount),bg));
-    }
-    downloadBytes(buildPdfFromJpegs(operationalPages),`h2_network_asset_placement_and_risk_${exportTheme}_${dateStr}.pdf`,'application/pdf');
 
-    await new Promise(r=>setTimeout(r,350));
-    const allSourcingRows=sourcingExportRows(), sourcingPages=[];
-    const sourcingPageCount=Math.max(1,Math.ceil(allSourcingRows.length/perPage));
-    for(let page=0;page<sourcingPageCount;page++){
-      sourcingPages.push(await svgToJpegBytes(buildSourcingPageSVG(exportTheme,allSourcingRows.slice(page*perPage,(page+1)*perPage),page+1,sourcingPageCount),bg));
+    if(exportSourcing){
+      await new Promise(r=>setTimeout(r,350));
+      const allSourcingRows=sourcingExportRows(), sourcingPages=[];
+      const sourcingPageCount=Math.max(1,Math.ceil(allSourcingRows.length/perPage));
+      for(let page=0;page<sourcingPageCount;page++) sourcingPages.push(await svgToJpegBytes(buildSourcingPageSVG(exportTheme,allSourcingRows.slice(page*perPage,(page+1)*perPage),page+1,sourcingPageCount),bg));
+      downloadBytes(buildPdfFromJpegs(sourcingPages),`h2_network_sourcing_plan_${exportTheme}_${dateStr}.pdf`,'application/pdf');
     }
-    downloadBytes(buildPdfFromJpegs(sourcingPages),`h2_network_sourcing_plan_${exportTheme}_${dateStr}.pdf`,'application/pdf');
   } catch(error){
-    alert(`The map PNG was exported, but one or more PDF reports could not be created: ${error.message}`);
+    alert(`One or more selected exports could not be created: ${error.message}`);
   }
 }
 
@@ -6435,7 +6506,7 @@ function buildAssetPlacementMapSVG(exportTheme){
   let svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${VBW}" height="${VBH}" viewBox="0 0 ${VBW} ${VBH}" font-family="Arial,Helvetica,sans-serif">`;
   svg+=`<rect width="${VBW}" height="${VBH}" fill="${PAL.BG}"/>`;
   svg+=`<text x="36" y="52" font-size="30" font-weight="700" fill="${PAL.HEADING}">HyWeave — Asset Placement Map</text>`;
-  svg+=`<text x="36" y="80" font-size="14" fill="${PAL.MUTED}">${all.length} assigned asset(s) · ${activeDemand().length} demand center(s) · ${fmt(S.assetPlacement.targetRadius,0)} mi / ${fmt(S.assetPlacement.targetHours,1)} h target · ${S.assetPlacement.maxNodesDownAll?'all nodes':`up to ${S.assetPlacement.maxNodesDown} nodes`} down · ${S.assetPlacement.constrainToDemandNodes?'demand-location constrained':'centroid based'}</text>`;
+  svg+=`<text x="36" y="80" font-size="14" fill="${PAL.MUTED}">${all.length} assigned asset(s) · ${assetRecommendationDemand().length} demand center(s) · ${fmt(S.assetPlacement.targetRadius,0)} mi / ${fmt(S.assetPlacement.targetHours,1)} h target · ${S.assetPlacement.maxNodesDownAll?'all nodes':`up to ${S.assetPlacement.maxNodesDown} nodes`} down · ${S.assetPlacement.constrainToDemandNodes?'demand-location constrained':'centroid based'}</text>`;
   svg+=`<rect x="36" y="90" width="120" height="4" fill="#0071CE"/><line x1="36" y1="100" x2="${VBW-36}" y2="100" stroke="${PAL.BORDER}"/>`;
   svg+=svgReportBrandingSVG(VBW-36,45,PAL.MUTED);
   svg+=`<rect x="${mapX}" y="${mapY}" width="${mapW}" height="${mapH}" fill="${PAL.PANEL}" stroke="${PAL.BORDER}"/>`;
@@ -6444,7 +6515,7 @@ function buildAssetPlacementMapSVG(exportTheme){
   STATE_LABELS.forEach(s=>{const[x,y]=toMap(s.lat,s.lon);svg+=`<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="11" fill="${PAL.MAPLABEL}" text-anchor="middle" dominant-baseline="middle">${s.abbr}</text>`;});
   const radius=S.assetPlacement.targetRadius*1.60934*mp.scale;
   all.forEach(a=>{const[x,y]=toMap(a.lat,a.lon),color=a.kind==='compression'?'#7A5195':'#F2A900';svg+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${radius.toFixed(1)}" fill="${color}" fill-opacity=".045" stroke="${color}" stroke-width="1.6" stroke-dasharray="6,4"/>`;});
-  activeDemand().forEach(n=>{const[x,y]=toMap(n.lat,n.lon);svg+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="#1E8A5F" stroke="#fff" stroke-width="1.6"/>`;});
+  assetRecommendationDemand().forEach(n=>{const[x,y]=toMap(n.lat,n.lon);svg+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="#1E8A5F" stroke="#fff" stroke-width="1.6"/>`;});
   all.forEach(a=>{
     const[x,y]=toMap(a.lat,a.lon);
     svg+=a.kind==='compression'
@@ -6942,6 +7013,30 @@ function attachHandlers(){
     assetMapViewBox=null;
     render();
   });
+  const setAssetRecDemandIds=(ids)=>{
+    const allowed=new Set(activeDemand().map(n=>n.id));
+    S.assetPlacement.demandNodeIds=[...new Set(ids)].filter(id=>allowed.has(id));
+    syncAssetPlacementTargets();
+    lastAssetPlacementComputed=null;
+    assetMapViewBox=null;
+    render();
+  };
+  const btnAssetRecDemandSelectAll=document.getElementById('btnAssetRecDemandSelectAll');
+  if(btnAssetRecDemandSelectAll) btnAssetRecDemandSelectAll.addEventListener('click',()=>setAssetRecDemandIds(activeDemand().map(n=>n.id)));
+  const btnAssetRecDemandClear=document.getElementById('btnAssetRecDemandClear');
+  if(btnAssetRecDemandClear) btnAssetRecDemandClear.addEventListener('click',()=>setAssetRecDemandIds([]));
+  document.querySelectorAll('.asset-rec-node-check').forEach(el=>el.addEventListener('change',()=>{
+    setAssetRecDemandIds(Array.from(document.querySelectorAll('.asset-rec-node-check:checked')).map(input=>input.value));
+  }));
+  document.querySelectorAll('.asset-rec-region-check').forEach(el=>el.addEventListener('change',()=>{
+    const region=el.dataset.assetRecRegion;
+    const current=new Set(assetRecommendationDemandIds());
+    activeDemand().filter(n=>demandNodeInRegion(n,region)).forEach(n=>{
+      if(el.checked) current.add(n.id);
+      else current.delete(n.id);
+    });
+    setAssetRecDemandIds([...current]);
+  }));
   const pHycasRadius = document.getElementById('pHycasRadius');
   if(pHycasRadius) pHycasRadius.addEventListener('input', (e)=>{ document.getElementById('pHycasRadiusVal').textContent = e.target.value+' mi'; });
   const pHycasHours = document.getElementById('pHycasHours');
@@ -7511,7 +7606,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,assetPlacementAtDemandNodes:false,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, demandRegionSelections:[], supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, supplySavingsCandidateIds:[], supplySavingsExcludedSourceIds:[], supplySavingsNodeIds:[], supplySavingsDays:365, supplySavingsUseExistingPriceOverride:false, supplySavingsExistingPriceOverride:null, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, showAssignedDistanceOutliers:false, assignedDistanceThreshold:250, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,maxNodesDownAll:true,constrainToDemandNodes:false}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,assetPlacementAtDemandNodes:false,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, demandRegionSelections:[], supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, supplySavingsCandidateIds:[], supplySavingsExcludedSourceIds:[], supplySavingsNodeIds:[], supplySavingsDays:365, supplySavingsUseExistingPriceOverride:false, supplySavingsExistingPriceOverride:null, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, showAssignedDistanceOutliers:false, assignedDistanceThreshold:250, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,maxNodesDownAll:true,constrainToDemandNodes:false,demandNodeIds:null}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
     lastScenario = null;
     lastMultiComparison = null;
     lastSupplySavings = null;
@@ -7543,6 +7638,9 @@ if(btnSaveScenarioTop) btnSaveScenarioTop.addEventListener('click', ()=>{
       supplySavingsDays: S.supplySavingsDays||365,
       supplySavingsUseExistingPriceOverride: !!S.supplySavingsUseExistingPriceOverride,
       supplySavingsExistingPriceOverride: S.supplySavingsExistingPriceOverride,
+    },
+    assetPlacement: {
+      demandNodeIds: S.assetPlacement&&Array.isArray(S.assetPlacement.demandNodeIds)?S.assetPlacement.demandNodeIds:null,
     },
     results: lastComputed ? {
       kpi: lastComputed.kpi,
@@ -7651,6 +7749,14 @@ function applyScenarioFile(file, onDone){
       S.showHycasRadius=typeof mapDisplay.showHycasRadius==='boolean'?mapDisplay.showHycasRadius:true;
       S.showAssignedDistanceOutliers=!!mapDisplay.showAssignedDistanceOutliers;
       S.assignedDistanceThreshold=Number(mapDisplay.assignedDistanceThreshold)>0?Number(mapDisplay.assignedDistanceThreshold):S.params.targetRadius;
+      const savedAssetPlacement=data.assetPlacement&&typeof data.assetPlacement==='object'?data.assetPlacement:{};
+      const validDemandIds=new Set(S.demand.filter(demandNodeSelected).map(n=>n.id));
+      S.assetPlacement={
+        ...(S.assetPlacement||{}),
+        demandNodeIds:Array.isArray(savedAssetPlacement.demandNodeIds)
+          ? savedAssetPlacement.demandNodeIds.filter(id=>validDemandIds.has(id))
+          : null,
+      };
       if(data.exportBranding && typeof data.exportBranding==='object'){
         S.exportBranding = {
           companyLogo: typeof data.exportBranding.companyLogo==='string' ? data.exportBranding.companyLogo : null,
