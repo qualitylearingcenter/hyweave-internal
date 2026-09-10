@@ -1642,7 +1642,10 @@ function computeSourcing(){
     nodeSummary[n.id] = { flows: nf, unmet, primary: nf[0]||null };
   });
   const sourceUsage = {};
-  supply.forEach(s=>{ sourceUsage[s.id] = s.capacity - remCap[s.id]; });
+  supply.forEach(s=>{
+    const usableCapacity=s.capacity * (capacityShare>0&&capacityShare<1?capacityShare:1);
+    sourceUsage[s.id] = usableCapacity - remCap[s.id];
+  });
   sourcingCacheKey=cacheKey;
   sourcingCacheValue={ flows, nodeSummary, sourceUsage };
   return sourcingCacheValue;
