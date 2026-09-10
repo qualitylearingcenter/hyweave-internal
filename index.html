@@ -1575,7 +1575,7 @@ function sourcingInputSignature(){
   return JSON.stringify({
     demand:activeDemand().map(n=>[n.id,n.lat,n.lon,n.rate]),
     supply:activeSupply().map(s=>[s.id,s.lat,s.lon,s.capacity,s.cost]),
-    transport:[S.params.costPerMile,S.params.avgSpeed,S.params.trailerCap,S.params.trailerCapacities||[]],
+    transport:[S.params.costPerMile,S.params.avgSpeed,S.params.trailerCap,S.params.trailerCapacities||[],S.assignmentCapacityLimit],
     overrides:(S.distanceOverrides||[]).map(o=>[o.nodeId,o.sourceId,o.distanceMiles,o.durationHours]),
     roadDistanceRevision,
   });
@@ -1597,7 +1597,8 @@ function computeSourcing(){
     });
   });
   const remDemand = {}; demand.forEach(n=>remDemand[n.id]=n.rate);
-  const remCap = {}; supply.forEach(s=>remCap[s.id]=s.capacity);
+  const capacityShare = Number(S.assignmentCapacityLimit);
+  const remCap = {}; supply.forEach(s=>remCap[s.id]=s.capacity * (capacityShare>0&&capacityShare<1?capacityShare:1));
   const flows = [];
 
   // Capacity-aware regret assignment using actual whole-trailer costs. This protects scarce
@@ -1623,17 +1624,12 @@ function computeSourcing(){
         options.push({...p,amt,trips,trailerPlan,transportCost,sourceCost,totalCost,effectiveLanded:totalCost/amt});
       });
       if(!options.length) return;
-      options.sort((a,b)=>a.effectiveLanded-b.effectiveLanded || a.dist-b.dist);
+      options.sort((a,b)=>a.dist-b.dist || a.hours-b.hours || a.effectiveLanded-b.effectiveLanded);
       const best=options[0];
-      const regret=options.length>1 ? options[1].effectiveLanded-best.effectiveLanded : Number.POSITIVE_INFINITY;
-      candidates.push({node:n,best,regret});
+      candidates.push({node:n,best});
     });
     if(!candidates.length) break;
-    candidates.sort((a,b)=>{
-      if(a.regret===Infinity && b.regret!==Infinity) return -1;
-      if(b.regret===Infinity && a.regret!==Infinity) return 1;
-      return b.regret-a.regret || a.best.effectiveLanded-b.best.effectiveLanded || b.best.amt-a.best.amt;
-    });
+    candidates.sort((a,b)=>a.best.dist-b.best.dist || a.best.hours-b.best.hours || a.best.effectiveLanded-b.best.effectiveLanded);
     const chosen=candidates[0].best;
     flows.push(chosen);
     remDemand[chosen.nodeId]-=chosen.amt;
@@ -4287,6 +4283,10 @@ function renderResultsTab(){
       <label class="maptogglelabel"><input type="checkbox" id="chkShowAssignedDistanceOutliers" ${S.showAssignedDistanceOutliers?'checked':''}> Red-dot assigned source distance over</label>
       <input id="fAssignedDistanceThreshold" type="number" min="1" step="1" value="${Number(S.assignedDistanceThreshold||S.params.targetRadius).toFixed(0)}" style="width:86px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:11.5px" aria-label="Assigned source distance threshold miles">
       <span style="font-size:11.5px;color:var(--muted);font-weight:600">mi</span>
+      <span style="font-size:11.5px;color:var(--muted);font-weight:700;margin-left:8px">Source capacity limit:</span>
+      <label class="maptogglelabel"><input type="checkbox" class="assignment-capacity-limit" value="0.25" ${S.assignmentCapacityLimit===0.25?'checked':''}>25%</label>
+      <label class="maptogglelabel"><input type="checkbox" class="assignment-capacity-limit" value="0.3333333333" ${Math.abs((S.assignmentCapacityLimit||0)-0.3333333333)<0.0001?'checked':''}>33%</label>
+      <label class="maptogglelabel"><input type="checkbox" class="assignment-capacity-limit" value="0.5" ${S.assignmentCapacityLimit===0.5?'checked':''}>50%</label>
       ${hydrogenDataBadge()}
       ${publicHydrogenStatus==='error'?'<button class="btn btn-small btn-outline" id="btnRetryHydrogenData">Retry public H₂ data</button>':''}
     </div>
@@ -7063,6 +7063,11 @@ function attachHandlers(){
   if(chkShowHycasRadius) chkShowHycasRadius.addEventListener('change', (e)=>{ S.showHycasRadius = e.target.checked; render(); });
   const chkShowAssignedDistanceOutliers = document.getElementById('chkShowAssignedDistanceOutliers');
   if(chkShowAssignedDistanceOutliers) chkShowAssignedDistanceOutliers.addEventListener('change', (e)=>{ S.showAssignedDistanceOutliers = e.target.checked; render(); });
+  document.querySelectorAll('.assignment-capacity-limit').forEach(el=>el.addEventListener('change',()=>{
+    document.querySelectorAll('.assignment-capacity-limit').forEach(other=>{ if(other!==el) other.checked=false; });
+    S.assignmentCapacityLimit=el.checked?Number(el.value):null;
+    sourcingCacheKey=''; sourcingCacheValue=null; lastComputed=null; render();
+  }));
   const fAssignedDistanceThreshold = document.getElementById('fAssignedDistanceThreshold');
   if(fAssignedDistanceThreshold) fAssignedDistanceThreshold.addEventListener('change', (e)=>{
     const miles = Number(e.target.value);
@@ -7613,7 +7618,7 @@ if(themeSelectTop) themeSelectTop.addEventListener('change', (e)=>{ applyTheme(e
 const btnResetTop = document.getElementById('btnReset');
 if(btnResetTop) btnResetTop.addEventListener('click', ()=>{
   if(confirm('Clear all data and reset parameters?')){
-    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,assetPlacementAtDemandNodes:false,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, demandRegionSelections:[], supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, supplySavingsCandidateIds:[], supplySavingsExcludedSourceIds:[], supplySavingsNodeIds:[], supplySavingsDays:365, supplySavingsUseExistingPriceOverride:false, supplySavingsExistingPriceOverride:null, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, showAssignedDistanceOutliers:false, assignedDistanceThreshold:250, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,maxNodesDownAll:true,constrainToDemandNodes:false,demandNodeIds:null}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
+    S = { demand:[], supply:[], params:{trailerCap:750,trailerCapacities:[],costPerMile:6,avgSpeed:48,safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,assetPlacementAtDemandNodes:false,unit:'kg',includeFuture:true,includeWmtTransfill:false,hycasRadius:400,hycasHours:8,hycasCapacity:1000,hycasHasOnboardStorage:true,hycasStorageCapacity:50,hycasCoLocateTrailer:false}, activeTab:'params', demandForm:null, demandRegionSelections:[], supplyForm:null, scenarioSourceIds:[], scenarioNodeIds:[], scenarioDays:3, scenarioTurnaround:2, scenarioResiliency:true, multiCompareSourceIds:[], multiCompareNodeIds:[], multiCompareDays:1, multiComparePrices:{}, supplySavingsCandidateIds:[], supplySavingsExcludedSourceIds:[], supplySavingsNodeIds:[], supplySavingsDays:365, supplySavingsUseExistingPriceOverride:false, supplySavingsExistingPriceOverride:null, notifyEmail:'', showTrailerRadius:true, showHycasRadius:true, showAssignedDistanceOutliers:false, assignedDistanceThreshold:250, assignmentCapacityLimit:null, assets:[], assetForm:null, realEstate:[], showRealEstateOverlay:true, aiChatOpen:false, aiChatMessages:[], aiChatBusy:false, exportBranding:{companyLogo:null,companyLogoName:'',customerLogo:null,customerLogoName:'',customerName:''}, assetPlacement:{safetyDays:1.5,targetRadius:250,targetHours:8,maxNodesDown:0,maxNodesDownAll:true,constrainToDemandNodes:false,demandNodeIds:null}, distanceOverrides:[], pricing:{mode:'lease',trailerPrice:1000000,hycasPrice:3500000,nodePrice:0,trailerLeaseRate:22000,hycasLeaseRate:73000,nodeLeaseRate:0,leaseTermMonths:60,tierDays:'0.5,1,1.5,2,2.5',outputs:[],volumeDiscounts:[],doeAward:500000,doeTrailerPassthroughPct:0,doeHycasPassthroughPct:0,manualHycasCount:null,manualTrailerCount:null,manualFuelCellCount:null} };
     lastScenario = null;
     lastMultiComparison = null;
     lastSupplySavings = null;
@@ -7636,6 +7641,7 @@ if(btnSaveScenarioTop) btnSaveScenarioTop.addEventListener('click', ()=>{
       showHycasRadius: !!S.showHycasRadius,
       showAssignedDistanceOutliers: !!S.showAssignedDistanceOutliers,
       assignedDistanceThreshold: Number(S.assignedDistanceThreshold)||S.params.targetRadius,
+      assignmentCapacityLimit: S.assignmentCapacityLimit==null?null:Number(S.assignmentCapacityLimit),
     },
     exportBranding: S.exportBranding,
     scenarioPlanning: {
@@ -7756,6 +7762,7 @@ function applyScenarioFile(file, onDone){
       S.showHycasRadius=typeof mapDisplay.showHycasRadius==='boolean'?mapDisplay.showHycasRadius:true;
       S.showAssignedDistanceOutliers=!!mapDisplay.showAssignedDistanceOutliers;
       S.assignedDistanceThreshold=Number(mapDisplay.assignedDistanceThreshold)>0?Number(mapDisplay.assignedDistanceThreshold):S.params.targetRadius;
+      S.assignmentCapacityLimit=[0.25,0.3333333333,0.5].includes(Number(mapDisplay.assignmentCapacityLimit))?Number(mapDisplay.assignmentCapacityLimit):null;
       const savedAssetPlacement=data.assetPlacement&&typeof data.assetPlacement==='object'?data.assetPlacement:{};
       const validDemandIds=new Set(S.demand.filter(demandNodeSelected).map(n=>n.id));
       S.assetPlacement={
