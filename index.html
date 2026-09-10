@@ -4226,9 +4226,14 @@ function renderResultsTab(){
   lastComputed = {sourcing, risk, hubs, hubPlan, kpi, hycasPlan, hycasUnits};
 
   const supply = activeSupply();
-  const proposedCoverageIds = new Set(hubs.flatMap(h=>(h.covered||[]).map(n=>n.id)));
+  // Coverage reflects demand nodes actually reachable from the selected supply plan within
+  // the configured distance/time guardrails, rather than the hub optimizer's theoretical
+  // staging assignments (which can include every node even when only one source is active).
   const eligibleCoverageDemand = activeDemand().filter(n=>!assignedSourceDistanceOutlier(n.id, sourcing));
-  const proposedCoverageCount = eligibleCoverageDemand.filter(n=>proposedCoverageIds.has(n.id)).length;
+  const proposedCoverageCount = eligibleCoverageDemand.filter(n=>{
+    const primary=sourcing.nodeSummary[n.id]?.primary;
+    return primary && primary.dist<=S.params.targetRadius && primary.hours<=S.params.targetHours;
+  }).length;
   const futureCount = S.supply.filter(s=>(s.status||'current')==='future').length;
   const selectedFutureCount = S.supply.filter(s=>(s.status||'current')==='future' && supplySourceSelected(s)).length;
 
@@ -5987,8 +5992,10 @@ function buildPresentationSVG(exportTheme){
   const NAVY=PAL.HEADING, BG=PAL.BG, BORDER=PAL.BORDER, MUTED=PAL.MUTED, TEXT=PAL.TEXT;
   const riskColor = {High:'#C81E33', Med:'#B57500', Low:'#177A4C'};
   const eligibleDemand = activeDemand().filter(n=>!assignedSourceDistanceOutlier(n.id, sourcing));
-  const coveredIds = new Set(hubs.flatMap(h=>(h.covered||[]).map(n=>n.id)));
-  const coveredEligible = eligibleDemand.filter(n=>coveredIds.has(n.id)).length;
+  const coveredEligible = eligibleDemand.filter(n=>{
+    const primary=sourcing.nodeSummary[n.id]?.primary;
+    return primary && primary.dist<=S.params.targetRadius && primary.hours<=S.params.targetHours;
+  }).length;
 
   // Map viewport: full-width 16:9 report page between header and footer.
   const mapX=36, mapY=118, mapW=1848, mapH=884;
