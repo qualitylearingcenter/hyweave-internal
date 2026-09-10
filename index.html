@@ -127,6 +127,11 @@
   .mapwrap{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
   .mapwrap.network-map-primary{width:100%;max-width:1440px;margin:0 auto;aspect-ratio:16/9;min-height:480px;background:var(--map-bg);}
   .mapwrap.network-map-primary>svg{display:block;width:100%;height:100%;background:var(--map-bg);}
+  .network-map-layout{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:12px;align-items:stretch;}
+  .map-price-infographic{border:1px solid var(--border);border-radius:10px;background:var(--panel);padding:16px 14px;display:flex;flex-direction:column;justify-content:center;min-height:150px;}
+  .map-price-infographic .value{font-size:28px;font-weight:800;color:var(--heading);line-height:1.1;margin:8px 0 6px;}
+  .map-price-infographic .label{font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em;}
+  .map-price-infographic .detail{font-size:10px;color:var(--muted);line-height:1.35;}
   .mapwrap.map-expanded{position:fixed;inset:14px;z-index:1000;max-width:none !important;margin:0 !important;border-radius:12px;box-shadow:0 20px 70px rgba(0,0,0,.55);background:var(--map-bg);display:flex;align-items:center;justify-content:center;}
   .mapwrap.map-expanded svg{width:100%;height:100%;cursor:grab;touch-action:none;}
   .mapwrap.map-expanded svg.map-panning{cursor:grabbing;}
@@ -134,7 +139,7 @@
   .map-controls .btn{min-width:34px;padding:6px 9px;}
   .map-expanded .maplegend{max-height:45%;overflow:auto;}
   body.map-modal-open{overflow:hidden;}
-  @media(max-width:900px){.mapwrap.network-map-primary{min-height:360px;aspect-ratio:4/3;}}
+  @media(max-width:900px){.network-map-layout{grid-template-columns:1fr;}.mapwrap.network-map-primary{min-height:360px;aspect-ratio:4/3;}.map-price-infographic{min-height:0;}}
   .maptooltip{position:absolute;pointer-events:none;background:var(--tooltip-bg);color:var(--tooltip-text);padding:8px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;box-shadow:0 4px 14px rgba(0,0,0,.25);display:none;z-index:50;max-width:290px;}
   .maptooltip b{color:var(--tooltip-text);}
   .maptooltip .mut{color:var(--tooltip-muted);}
@@ -4213,6 +4218,9 @@ function renderResultsTab(){
     return `<div class="card"><div class="empty">No demand nodes are selected. Return to Demand Nodes and check at least one location or node group.</div></div>`;
   }
   const sourcing = computeSourcing();
+  const alignedVolume = sourcing.flows.reduce((sum,f)=>sum+Number(f.amt||0),0);
+  const alignedMoleculeCost = sourcing.flows.reduce((sum,f)=>sum+Number(f.sourceCost||0),0);
+  const averageAlignedPrice = alignedVolume>0 ? alignedMoleculeCost/alignedVolume : 0;
   const baseRisk = computeBaseRisk(sourcing);
   const hubPlan = computeAutoHubs(baseRisk);
   const hubs = hubPlan.hubs;
@@ -4293,6 +4301,7 @@ function renderResultsTab(){
       ${hydrogenDataBadge()}
       ${publicHydrogenStatus==='error'?'<button class="btn btn-small btn-outline" id="btnRetryHydrogenData">Retry public H₂ data</button>':''}
     </div>
+    <div class="network-map-layout">
     <div class="mapwrap network-map-primary" id="networkMapWrap">
       <svg id="mapsvg" viewBox="0 0 ${NETWORK_MAP_PROJ.VBW} ${NETWORK_MAP_PROJ.VBH}" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="map-controls">
@@ -4316,8 +4325,13 @@ function renderResultsTab(){
         ${S.showHycasRadius?`<div class="item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:1.3px dashed #7A5195;background:rgba(122,81,149,.05);margin-right:6px;vertical-align:middle"></span>HyCAS response radius (${fmt(S.params.hycasRadius,0)} mi)</div>`:''}
       </div>
       <div class="mapcoverage" aria-label="Demand node coverage"><span>${proposedCoverageCount} of ${eligibleCoverageDemand.length} eligible demand nodes covered</span><span class="muted">Proposed supply plan · red-dot outliers excluded</span></div>
-      <div class="mapcoverage" aria-label="Demand node coverage"><span>${proposedCoverageCount} of ${eligibleCoverageDemand.length} eligible demand nodes covered</span><span class="muted">Proposed supply plan · red-dot outliers excluded</span></div>
       <div class="maptooltip" id="mapTooltip"></div>
+    </div>
+    <div class="map-price-infographic" aria-label="Average H2 price per kilogram">
+      <div class="label">Average aligned H₂ price</div>
+      <div class="value">${averageAlignedPrice>0?money(averageAlignedPrice,2):'—'}</div>
+      <div class="detail">Weighted by the volume currently assigned across active supply sources.</div>
+    </div>
     </div>
     <div class="note">Node size = consumption rate. Line thickness = allocated flow volume. Diamond markers are proposed staging locations at the nearest town center to each calculated cluster centroid. Solid circles show your configured <b>Target Delivery Radius</b> (${fmt(S.params.targetRadius,0)} mi), the same for every hub. Public hydrogen stations are context only and are not assumed to have available commercial capacity.</div>
   </div>
