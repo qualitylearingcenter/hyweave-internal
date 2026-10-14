@@ -4241,7 +4241,8 @@ function renderResultsTab(){
   const eligibleCoverageDemand = activeDemand().filter(n=>!assignedSourceDistanceOutlier(n.id, sourcing));
   const proposedCoverageCount = eligibleCoverageDemand.filter(n=>{
     const primary=sourcing.nodeSummary[n.id]?.primary;
-    return primary && primary.dist<=S.params.targetRadius && primary.hours<=S.params.targetHours;
+    const coverageDistance=Number(S.assignedDistanceThreshold)||S.params.targetRadius;
+    return primary && primary.dist<=coverageDistance && primary.hours<=S.params.targetHours;
   }).length;
   const futureCount = S.supply.filter(s=>(s.status||'current')==='future').length;
   const selectedFutureCount = S.supply.filter(s=>(s.status||'current')==='future' && supplySourceSelected(s)).length;
@@ -5786,6 +5787,10 @@ function drawMap(){
   sourcing.flows.forEach(f=>{
     const n = S.demand.find(x=>x.id===f.nodeId), s = S.supply.find(x=>x.id===f.sourceId);
     if(!n||!s) return;
+    const nodeRisk=risk[n.id];
+    const threshold=Number(S.assignedDistanceThreshold)||S.params.targetRadius;
+    const primary=sourcing.nodeSummary[n.id]&&sourcing.nodeSummary[n.id].primary;
+    if(!nodeRisk || nodeRisk.tier!=='Low' || !primary || primary.dist>threshold || primary.hours>S.params.targetHours) return;
     const p1=mapXY(n.lat,n.lon), p2=mapXY(s.lat,s.lon);
     if(!p1||!p2) return;
     const [x1,y1]=p1, [x2,y2]=p2;
@@ -6013,7 +6018,8 @@ function buildPresentationSVG(exportTheme){
   const eligibleDemand = activeDemand().filter(n=>!assignedSourceDistanceOutlier(n.id, sourcing));
   const coveredEligible = eligibleDemand.filter(n=>{
     const primary=sourcing.nodeSummary[n.id]?.primary;
-    return primary && primary.dist<=S.params.targetRadius && primary.hours<=S.params.targetHours;
+    const coverageDistance=Number(S.assignedDistanceThreshold)||S.params.targetRadius;
+    return primary && primary.dist<=coverageDistance && primary.hours<=S.params.targetHours;
   }).length;
 
   // Map viewport: full-width 16:9 report page between header and footer.
@@ -6059,6 +6065,10 @@ function buildPresentationSVG(exportTheme){
   sourcing.flows.forEach(f=>{
     const n = S.demand.find(x=>x.id===f.nodeId), s = S.supply.find(x=>x.id===f.sourceId);
     if(!n||!s) return;
+    const nodeRisk=risk[n.id];
+    const threshold=Number(S.assignedDistanceThreshold)||S.params.targetRadius;
+    const primary=sourcing.nodeSummary[n.id]&&sourcing.nodeSummary[n.id].primary;
+    if(!nodeRisk || nodeRisk.tier!=='Low' || !primary || primary.dist>threshold || primary.hours>S.params.targetHours) return;
     const p1=toMap(n.lat,n.lon), p2=toMap(s.lat,s.lon);
     if(!p1||!p2) return;
     const [x1,y1]=p1, [x2,y2]=p2;
