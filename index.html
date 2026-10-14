@@ -1581,6 +1581,7 @@ function sourcingInputSignature(){
     demand:activeDemand().map(n=>[n.id,n.lat,n.lon,n.rate]),
     supply:activeSupply().map(s=>[s.id,s.lat,s.lon,s.capacity,s.cost]),
     transport:[S.params.costPerMile,S.params.avgSpeed,S.params.trailerCap,S.params.trailerCapacities||[],S.assignmentCapacityLimit],
+    distanceRule:[!!S.showAssignedDistanceOutliers,Number(S.assignedDistanceThreshold)||S.params.targetRadius],
     overrides:(S.distanceOverrides||[]).map(o=>[o.nodeId,o.sourceId,o.distanceMiles,o.durationHours]),
     roadDistanceRevision,
   });
@@ -1620,6 +1621,7 @@ function computeSourcing(){
         if(remCap[s.id]<=1e-9) return;
         const p=pairByLane.get(n.id+'|'+s.id);
         if(!p) return;
+        if(S.showAssignedDistanceOutliers && p.dist>(Number(S.assignedDistanceThreshold)||S.params.targetRadius)) return;
         const amt=Math.min(remDemand[n.id],remCap[s.id]);
         const trailerPlan=trailerPlanForVolume(amt);
         const trips=trailerPlan.count;
@@ -4291,7 +4293,7 @@ function renderResultsTab(){
     <div class="toolbar">
       <label class="maptogglelabel"><input type="checkbox" id="chkShowTrailerRadius" ${S.showTrailerRadius?'checked':''}> Show trailer delivery radius</label>
       <label class="maptogglelabel"><input type="checkbox" id="chkShowHycasRadius" ${S.showHycasRadius?'checked':''}> Show HyCAS response radius</label>
-      <label class="maptogglelabel"><input type="checkbox" id="chkShowAssignedDistanceOutliers" ${S.showAssignedDistanceOutliers?'checked':''}> Red-dot assigned source distance over</label>
+      <label class="maptogglelabel"><input type="checkbox" id="chkShowAssignedDistanceOutliers" ${S.showAssignedDistanceOutliers?'checked':''}> Exclude assignments over</label>
       <input id="fAssignedDistanceThreshold" type="number" min="1" step="1" value="${Number(S.assignedDistanceThreshold||S.params.targetRadius).toFixed(0)}" style="width:86px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:11.5px" aria-label="Assigned source distance threshold miles">
       <span style="font-size:11.5px;color:var(--muted);font-weight:600">mi</span>
       <span style="font-size:11.5px;color:var(--muted);font-weight:700;margin-left:8px">Source capacity limit:</span>
@@ -4314,7 +4316,7 @@ function renderResultsTab(){
         <div class="item"><span class="swatch" style="background:#C81E33"></span>High risk node</div>
         <div class="item"><span class="swatch" style="background:#B57500"></span>Medium risk node</div>
         <div class="item"><span class="swatch" style="background:#177A4C"></span>Low risk node</div>
-        ${S.showAssignedDistanceOutliers?`<div class="item"><span class="swatch" style="background:#E11D48"></span>Assigned source &gt; ${fmt(S.assignedDistanceThreshold||S.params.targetRadius,0)} mi</div>`:''}
+        ${S.showAssignedDistanceOutliers?`<div class="item"><span class="swatch" style="background:#E11D48"></span>Excluded source &gt; ${fmt(S.assignedDistanceThreshold||S.params.targetRadius,0)} mi</div>`:''}
         <div class="item"><span class="swatch" style="background:var(--blue);border-radius:2px"></span>${S.supply.some(isIhSupplySource)?'Other supply source':'Current supply source'}</div>
         ${S.supply.some(isIhSupplySource)?'<div class="item"><span style="display:inline-block;width:14px;margin-right:2px;color:#F2A900;font-size:16px;line-height:10px;text-align:center;text-shadow:0 0 1px #fff">★</span>IH supply source</div>':''}
         ${S.supply.some(s=>(s.status||'current')==='future')?`<div class="item"><span style="display:inline-block;width:10px;height:10px;border:1.3px dashed var(--blue);background:#5B9BD9;margin-right:6px;vertical-align:middle;border-radius:2px"></span>Future supply source</div>`:''}
@@ -7079,7 +7081,7 @@ function attachHandlers(){
   const chkShowHycasRadius = document.getElementById('chkShowHycasRadius');
   if(chkShowHycasRadius) chkShowHycasRadius.addEventListener('change', (e)=>{ S.showHycasRadius = e.target.checked; render(); });
   const chkShowAssignedDistanceOutliers = document.getElementById('chkShowAssignedDistanceOutliers');
-  if(chkShowAssignedDistanceOutliers) chkShowAssignedDistanceOutliers.addEventListener('change', (e)=>{ S.showAssignedDistanceOutliers = e.target.checked; render(); });
+  if(chkShowAssignedDistanceOutliers) chkShowAssignedDistanceOutliers.addEventListener('change', (e)=>{ S.showAssignedDistanceOutliers = e.target.checked; sourcingCacheKey=''; sourcingCacheValue=null; lastComputed=null; render(); });
   document.querySelectorAll('.assignment-capacity-limit').forEach(el=>el.addEventListener('change',()=>{
     document.querySelectorAll('.assignment-capacity-limit').forEach(other=>{ if(other!==el) other.checked=false; });
     S.assignmentCapacityLimit=el.checked?Number(el.value):null;
@@ -7089,6 +7091,7 @@ function attachHandlers(){
   if(fAssignedDistanceThreshold) fAssignedDistanceThreshold.addEventListener('change', (e)=>{
     const miles = Number(e.target.value);
     if(Number.isFinite(miles) && miles>0) S.assignedDistanceThreshold = miles;
+    sourcingCacheKey=''; sourcingCacheValue=null; lastComputed=null;
     render();
   });
 
