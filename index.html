@@ -6997,7 +6997,17 @@ function attachHandlers(){
     }
   });
   const pTargetRadius = document.getElementById('pTargetRadius');
-  if(pTargetRadius) pTargetRadius.addEventListener('input', (e)=>{ document.getElementById('pTargetRadiusVal').textContent = e.target.value+' mi'; });
+  if(pTargetRadius){
+    pTargetRadius.addEventListener('input', (e)=>{ document.getElementById('pTargetRadiusVal').textContent = e.target.value+' mi'; });
+    pTargetRadius.addEventListener('change', (e)=>{
+      const miles=Number(e.target.value);
+      if(!Number.isFinite(miles)||miles<=0) return;
+      S.params.targetRadius=miles;
+      S.assignedDistanceThreshold=miles;
+      sourcingCacheKey=''; sourcingCacheValue=null; lastComputed=null;
+      if(S.activeTab==='results') render();
+    });
+  }
   const pTargetHours = document.getElementById('pTargetHours');
   if(pTargetHours) pTargetHours.addEventListener('input', (e)=>{ document.getElementById('pTargetHoursVal').textContent = e.target.value+' h'; });
   const pMaxNodesDown=document.getElementById('pMaxNodesDown');
@@ -7098,12 +7108,26 @@ function attachHandlers(){
     sourcingCacheKey=''; sourcingCacheValue=null; lastComputed=null; render();
   }));
   const fAssignedDistanceThreshold = document.getElementById('fAssignedDistanceThreshold');
-  if(fAssignedDistanceThreshold) fAssignedDistanceThreshold.addEventListener('change', (e)=>{
-    const miles = Number(e.target.value);
-    if(Number.isFinite(miles) && miles>0) S.assignedDistanceThreshold = miles;
-    sourcingCacheKey=''; sourcingCacheValue=null; lastComputed=null;
-    render();
-  });
+  if(fAssignedDistanceThreshold){
+    let thresholdRefreshTimer=null;
+    const refreshDistanceRule=()=>{
+      sourcingCacheKey=''; sourcingCacheValue=null; lastComputed=null;
+      render();
+    };
+    fAssignedDistanceThreshold.addEventListener('input', (e)=>{
+      const miles=Number(e.target.value);
+      if(!Number.isFinite(miles)||miles<=0) return;
+      S.assignedDistanceThreshold=miles;
+      clearTimeout(thresholdRefreshTimer);
+      thresholdRefreshTimer=setTimeout(refreshDistanceRule,250);
+    });
+    fAssignedDistanceThreshold.addEventListener('change', (e)=>{
+      const miles=Number(e.target.value);
+      if(Number.isFinite(miles)&&miles>0) S.assignedDistanceThreshold=miles;
+      clearTimeout(thresholdRefreshTimer);
+      refreshDistanceRule();
+    });
+  }
 
   /* PRICING_BLOCK_START */
   const btnDiscountTemplate = document.getElementById('btnDiscountTemplate');
