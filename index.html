@@ -1132,6 +1132,7 @@ async function refreshRoadDistances(){
 // key, exceeded quota, network down) would retry on every single render() call forever, hammering
 // the backend in a tight loop instead of failing once and waiting for something to actually change.
 function maybeRefreshRoadDistances(){
+  if(LOCAL_FILE_MODE){ roadDistanceStatus = 'unconfigured'; roadDistanceError = 'Real routing is unavailable in a file:// preview. Deploy the site to Netlify or run it through Netlify Dev.'; return; }
   if(!ROUTE_ENDPOINT_URL) { roadDistanceStatus = 'unconfigured'; return; }
   if(roadDistanceStatus==='loading') return;
   if(activeDemand().length===0 || activeSupply().length===0) return;
@@ -1253,6 +1254,7 @@ async function refreshPlacementRoadDistances(locations){
 }
 
 function maybeRefreshPlacementRoadDistances(locations){
+  if(LOCAL_FILE_MODE){ placementRoadStatus = 'unconfigured'; placementRoadError = 'Real routing is unavailable in a file:// preview. Deploy the site to Netlify or run it through Netlify Dev.'; return; }
   if(!ROUTE_ENDPOINT_URL){ placementRoadStatus = 'unconfigured'; return; }
   if(placementRoadStatus==='loading') return;
   if(locations.length===0) return;
@@ -3862,6 +3864,7 @@ function sourcingDistanceBadge(){
   if(totalPairs>0 && overrideCount>=totalPairs){
     return '<span class="tag tag-low">\u2713 Real road distances (manual overrides)</span>';
   }
+  if(LOCAL_FILE_MODE) return '<span class="tag tag-med" title="Deploy the site to Netlify or run it through Netlify Dev to enable the routing function.">Straight-line distance (local preview — deploy for real routing)</span>';
   if(roadDistanceStatus==='ready'){
     const suffix=overrideCount?` + ${overrideCount} manual override(s)`:'';
     if(roadDistanceProvider==='OSRM fallback'){
@@ -3882,6 +3885,7 @@ function sourcingDistanceBadge(){
 // Shared status badge for hub/HyCAS/Asset Placement reach figures — same states as the Sourcing
 // Plan's road-distance badge, since it's the same underlying cache.
 function placementReachBadge(){
+  if(LOCAL_FILE_MODE) return '<span class="tag tag-med" title="Deploy the site to Netlify or run it through Netlify Dev to enable the routing function.">Straight-line reach (local preview — deploy for real routing)</span>';
   if(placementRoadStatus==='ready') return `<span class="tag tag-low">\u2713 Real road reach (${esc(placementRoadProvider||'routing provider')})</span>`;
   if(placementRoadStatus==='loading') return '<span class="tag tag-med">Fetching real road reach\u2026 large networks may take 20\u201325 seconds</span>';
   if(placementRoadStatus==='error') return `<span class="tag tag-high" title="${esc(placementRoadError)}">\u26a0 Real routing failed \u2014 showing straight-line</span> <a href="#" class="lnkRetryPlacementRoad" style="font-size:11px;color:var(--blue);margin-left:6px">Retry</a>`;
