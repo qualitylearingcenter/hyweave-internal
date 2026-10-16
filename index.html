@@ -566,6 +566,14 @@ function fmt(n,d){ if(n===undefined||n===null||isNaN(n)) return '—'; return Nu
 function money(n,d){ if(n===undefined||n===null||isNaN(n)) return '—'; return '$'+fmt(n,d===undefined?2:d); }
 function signedMoney(n,d){ if(n===undefined||n===null||isNaN(n)) return '—'; return Number(n)<0?'-$'+fmt(Math.abs(Number(n)),d===undefined?2:d):money(n,d); }
 function esc(s){ return (s+'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function drivingRouteUrl(origin,destination){
+  if(!origin||!destination||!Number.isFinite(Number(origin.lat))||!Number.isFinite(Number(origin.lon))||!Number.isFinite(Number(destination.lat))||!Number.isFinite(Number(destination.lon))) return '';
+  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(`${origin.lat},${origin.lon}`)}&destination=${encodeURIComponent(`${destination.lat},${destination.lon}`)}&travelmode=driving`;
+}
+function routeButton(origin,destination){
+  const url=drivingRouteUrl(origin,destination);
+  return url?`<a class="btn btn-small btn-outline route-link" href="${url}" target="_blank" rel="noopener">Show route on map</a>`:'—';
+}
 // A failed fetch to one of our own Netlify functions sometimes doesn't return OUR error text at
 // all -- if the function isn't deployed at that path, Netlify's own 404 page (a full HTML
 // document) comes back instead, and dumping that raw into the UI is useless noise. Detect that
@@ -4436,11 +4444,11 @@ function renderResultsTab(){
       ${sourcingDistanceBadge()}
     </div>
     <p class="desc">Least-landed-cost assignment of supply sources to demand nodes, respecting source capacity. Trailers are always dispatched full, so daily volume is rounded up to whole trailer loads — cost reflects that.</p>
-    <table><thead><tr><th>Demand Node</th><th>Assigned Source</th><th>Distance (mi)</th><th>Travel Time</th><th>Volume (${S.params.unit}/day)</th><th>Trailers/day</th><th>Landed Cost ($/${S.params.unit})</th><th>Daily Cost</th></tr></thead>
+    <table><thead><tr><th>Demand Node</th><th>Assigned Source</th><th>Distance (mi)</th><th>Travel Time</th><th>Volume (${S.params.unit}/day)</th><th>Trailers/day</th><th>Landed Cost ($/${S.params.unit})</th><th>Daily Cost</th><th>Route</th></tr></thead>
     <tbody>
     ${activeDemand().map(n=>{
       const ns = sourcing.nodeSummary[n.id];
-      if(ns.flows.length===0) return `<tr><td><b>${esc(n.name)}</b></td><td colspan="7" style="color:var(--red)">No supply available</td></tr>`;
+      if(ns.flows.length===0) return `<tr><td><b>${esc(n.name)}</b></td><td colspan="8" style="color:var(--red)">No supply available</td></tr>`;
       return ns.flows.map((f,i)=>{
         const src = S.supply.find(s=>s.id===f.sourceId);
         const isFuture = (src.status||'current')==='future';
@@ -4453,8 +4461,9 @@ function renderResultsTab(){
           <td>${f.trips}${f.trailerPlan?`<br><span style="color:var(--muted);font-size:10px">${esc(f.trailerPlan.label)}</span>`:''}</td>
           <td>${money(f.effectiveLanded)}</td>
           <td>${money(f.totalCost,0)}</td>
+          <td>${routeButton(src,n)}</td>
         </tr>`;
-      }).join('') + (ns.unmet>0?`<tr><td></td><td colspan="7" style="color:var(--red)">⚠ ${fmt(ns.unmet)} ${S.params.unit}/day unmet</td></tr>`:'');
+      }).join('') + (ns.unmet>0?`<tr><td></td><td colspan="8" style="color:var(--red)">⚠ ${fmt(ns.unmet)} ${S.params.unit}/day unmet</td></tr>`:'');
     }).join('')}
     </tbody></table>
     <div class="note">Trailers/day = ceil(volume assigned on that lane ÷ trailer capacity) — a lane moving even 1 kg over a full trailer's capacity requires a second trailer, so landed cost per ${S.params.unit} can run higher than the simple distance-based rate on low-volume lanes.</div>
@@ -4482,7 +4491,7 @@ function renderResultsTab(){
   <div class="card">
     <h2>Risk Assessment</h2>
     <p class="desc">Nodes are flagged <b>High</b> only for an actual plan failure — neither the hub nor a direct supply source can reach it within target, or there's an unmet-demand shortfall — not by rank against other nodes. If a node's hub alone would put it at High risk but its supply source can reach it directly within target, the source route is used instead. A well-covered network can show zero High-risk nodes.</p>
-    <table><thead><tr><th>Demand Node</th><th>Consumption</th><th>Serviced Via</th><th>Distance / Time</th><th>Within ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h Target</th><th>Primary Source</th><th>Risk</th></tr></thead>
+    <table><thead><tr><th>Demand Node</th><th>Consumption</th><th>Serviced Via</th><th>Distance / Time</th><th>Within ${fmt(S.params.targetRadius,0)}mi / ${fmt(S.params.targetHours,1)}h Target</th><th>Primary Source</th><th>Risk</th><th>Route</th></tr></thead>
     <tbody>
     ${[...activeDemand()].sort((a,b)=>{
       const ra=risk[a.id], rb=risk[b.id];
@@ -4497,6 +4506,9 @@ function renderResultsTab(){
       const primary = sourcing.nodeSummary[n.id].primary;
       const displayedSourceId = r.servicedVia==='source' && r.directSourceId ? r.directSourceId : (primary?primary.sourceId:null);
       const displayedSource = displayedSourceId ? S.supply.find(s=>s.id===displayedSourceId) : null;
+      const routeHubId=r.selectedHubIdx||r.hubIdx;
+      const routeHub=routeHubId!=null&&lastComputed.hubs?lastComputed.hubs.find(h=>String(h.idx)===String(routeHubId)):null;
+      const routeOrigin=displayedSource||routeHub;
       const srcName = displayedSource ? displayedSource.name : '—';
       const viaLabel = r.servicedVia==='source' ? `Direct: ${esc(srcName)}`
         : (r.servicedVia==='alternateHub' ? `Alternate Hub ${r.selectedHubIdx}`
@@ -4510,6 +4522,7 @@ function renderResultsTab(){
         <td>${isWithin?'<span class="tag tag-low">Yes</span>':'<span class="tag tag-high">No</span>'}</td>
         <td>${esc(srcName)}</td>
         <td><span class="tag ${tagClass}">${r.tier}</span></td>
+        <td>${routeButton(routeOrigin,n)}</td>
       </tr>`;
     }).join('')}
     </tbody></table>
