@@ -4202,20 +4202,35 @@ function renderResultsTab(){
   if(activeDemand().length===0){
     return `<div class="card"><div class="empty">No demand nodes are selected. Return to Demand Nodes and check at least one location or node group.</div></div>`;
   }
-  const sourcing = computeSourcing();
-  const alignedVolume = sourcing.flows.reduce((sum,f)=>sum+Number(f.amt||0),0);
-  const alignedMoleculeCost = sourcing.flows.reduce((sum,f)=>sum+Number(f.sourceCost||0),0);
-  const averageAlignedPrice = alignedVolume>0 ? alignedMoleculeCost/alignedVolume : 0;
-  const baseRisk = computeBaseRisk(sourcing);
-  const hubPlan = computeAutoHubs(baseRisk);
-  const hubs = hubPlan.hubs;
-  const hycasPlan = computeAutoHycas(baseRisk);
-  const hycasUnits = hycasPlan.units;
-  applyHycasTrailerCoLocation(hubs, hycasUnits);
-  const risk = computeFinalRisk(baseRisk, hubs, hycasUnits);
-  const kpi = computeKPIs(sourcing, risk, hubs, hycasUnits);
-  const hycasConfirmed = hycasPlan.metTarget && hycasPlan.roadValidated;
-  lastComputed = {sourcing, risk, hubs, hubPlan, kpi, hycasPlan, hycasUnits};
+  const resultsInputKey = networkSignature()+'|'+JSON.stringify({params:S.params,assignmentCapacityLimit:S.assignmentCapacityLimit,showAssignedDistanceOutliers:S.showAssignedDistanceOutliers,assignedDistanceThreshold:S.assignedDistanceThreshold});
+  // A routing response causes one intentional recomputation. Every render while that response is
+  // in flight reuses the current plan instead of rebuilding clustering and risk from scratch.
+  const canReuse = lastComputed && lastComputed._resultsInputKey===resultsInputKey &&
+    lastComputed._placementStatus===placementRoadStatus && lastComputed._roadRevision===roadDistanceRevision;
+  let sourcing, averageAlignedPrice, baseRisk, hubPlan, hubs, hycasPlan, hycasUnits, risk, kpi, hycasConfirmed;
+  if(canReuse){
+    ({sourcing, risk, hubs, hubPlan, kpi, hycasPlan, hycasUnits}=lastComputed);
+    const alignedVolume = sourcing.flows.reduce((sum,f)=>sum+Number(f.amt||0),0);
+    const alignedMoleculeCost = sourcing.flows.reduce((sum,f)=>sum+Number(f.sourceCost||0),0);
+    averageAlignedPrice = alignedVolume>0 ? alignedMoleculeCost/alignedVolume : 0;
+    baseRisk = null;
+    hycasConfirmed = hycasPlan.metTarget && hycasPlan.roadValidated;
+  } else {
+    sourcing = computeSourcing();
+    const alignedVolume = sourcing.flows.reduce((sum,f)=>sum+Number(f.amt||0),0);
+    const alignedMoleculeCost = sourcing.flows.reduce((sum,f)=>sum+Number(f.sourceCost||0),0);
+    averageAlignedPrice = alignedVolume>0 ? alignedMoleculeCost/alignedVolume : 0;
+    baseRisk = computeBaseRisk(sourcing);
+    hubPlan = computeAutoHubs(baseRisk);
+    hubs = hubPlan.hubs;
+    hycasPlan = computeAutoHycas(baseRisk);
+    hycasUnits = hycasPlan.units;
+    applyHycasTrailerCoLocation(hubs, hycasUnits);
+    risk = computeFinalRisk(baseRisk, hubs, hycasUnits);
+    kpi = computeKPIs(sourcing, risk, hubs, hycasUnits);
+    hycasConfirmed = hycasPlan.metTarget && hycasPlan.roadValidated;
+    lastComputed = {sourcing, risk, hubs, hubPlan, kpi, hycasPlan, hycasUnits, _resultsInputKey:resultsInputKey, _placementStatus:placementRoadStatus, _roadRevision:roadDistanceRevision};
+  }
 
   const supply = activeSupply();
   // Coverage reflects demand nodes actually reachable from the selected supply plan within

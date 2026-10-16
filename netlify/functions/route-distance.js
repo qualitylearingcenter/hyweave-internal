@@ -78,20 +78,28 @@ exports.handler = async function(event) {
   try {
     let provider = 'OpenRouteService driving-hgv';
     let useOsrm = !process.env.ORS_API_KEY;
+    const chunks = [];
     for (let start = 0; start < origins.length; start += chunkSize) {
-      const originChunk = origins.slice(start, start + chunkSize);
+      chunks.push({ start, originChunk: origins.slice(start, start + chunkSize) });
+    }
+    // Run independent origin chunks concurrently. A large placement matrix should finish in
+    // roughly one upstream round-trip instead of waiting 20–30 seconds per sequential chunk.
+    const settled = await Promise.all(chunks.map(async ({start, originChunk}) => {
       let data;
       if (!useOsrm) {
         try { data = await requestOrs(originChunk); }
         catch (error) { useOsrm = true; provider = 'OSRM fallback'; data = await requestOsrm(originChunk); }
       } else data = await requestOsrm(originChunk);
+      return { start, data };
+    }));
+    settled.forEach(({start, data})=>{
       (data.distances || []).forEach((row, i) => row.forEach((meters, j) => {
         if (Number.isFinite(Number(meters))) distancesMiles[start + i][j] = Number(meters) / 1609.344;
       }));
       (data.durations || []).forEach((row, i) => row.forEach((seconds, j) => {
         if (Number.isFinite(Number(seconds))) durationsHours[start + i][j] = Number(seconds) / 3600;
       }));
-    }
+    });
     return response(200, { provider, distancesMiles, durationsHours });
   } catch (error) {
     return response(502, { error: error && error.message ? error.message : 'Road routing failed' });
