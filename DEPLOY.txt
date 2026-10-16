@@ -6,9 +6,14 @@ index.html
 netlify/
   functions/
     town-centers.js
+    route-distance.js
     us-places.json
 
 The JSON file must remain beside town-centers.js because the function loads it directly.
+
+Set the Netlify environment variable ORS_API_KEY to enable real driving distance and time
+matrices. Without it, the browser deliberately shows straight-line estimates instead of
+pretending they are road routes.
 
 After deployment, perform a hard refresh so the page starts with empty in-memory lookup caches.
 The U.S. town lookup no longer requires ORS_API_KEY. ORS_API_KEY remains optional for coordinates
