@@ -4495,7 +4495,13 @@ function renderResultsTab(){
       const displayedSource = displayedSourceId ? S.supply.find(s=>s.id===displayedSourceId) : null;
       const routeHubId=r.selectedHubIdx||r.hubIdx;
       const routeHub=routeHubId!=null&&lastComputed.hubs?lastComputed.hubs.find(h=>String(h.idx)===String(routeHubId)):null;
-      const routeOrigin=displayedSource||routeHub;
+      const routeHycas=r.selectedHycasIdx!=null&&lastComputed.hycasUnits?lastComputed.hycasUnits.find(u=>String(u.idx)===String(r.selectedHycasIdx)):null;
+      // The route must match the alignment shown in the row. Hub-served rows route from the
+      // assigned hub, direct-source rows route from the supply source, and co-located HyCAS
+      // rows route from the selected unit. Previously every row preferred the primary source,
+      // so a row labeled "Assigned Hub" opened a different lane than its displayed distance.
+      const routeOrigin=r.servicedVia==='source' ? displayedSource
+        : (r.servicedVia==='coLocatedHycas' ? routeHycas : routeHub);
       const srcName = displayedSource ? displayedSource.name : '—';
       const viaLabel = r.servicedVia==='source' ? `Direct: ${esc(srcName)}`
         : (r.servicedVia==='alternateHub' ? `Alternate Hub ${r.selectedHubIdx}`
@@ -5886,6 +5892,33 @@ function drawMap(){
     let left = evt.clientX-rect.left+14, top = evt.clientY-rect.top+14;
     tooltip.style.left = left+'px'; tooltip.style.top = top+'px';
   }
+  // Marker clicks open a real driving route for the alignment currently used by the model.
+  function openMarkerRoute(origin, destination){
+    const url = drivingRouteUrl(origin, destination);
+    if(url) window.open(url, '_blank', 'noopener,noreferrer');
+  }
+  function routeOriginForDemand(n){
+    const r = risk[n.id];
+    if(!r) return null;
+    if(r.servicedVia==='source'){
+      const sourceId = r.directSourceId || r.primarySourceId;
+      return sourceId ? S.supply.find(s=>s.id===sourceId) : null;
+    }
+    if(r.servicedVia==='hub' || r.servicedVia==='alternateHub'){
+      const hubIdx = r.selectedHubIdx || r.hubIdx;
+      return hubIdx!=null ? hubs.find(h=>String(h.idx)===String(hubIdx)) : null;
+    }
+    if(r.servicedVia==='coLocatedHycas'){
+      return r.selectedHycasIdx!=null ? hycasUnits.find(u=>String(u.idx)===String(r.selectedHycasIdx)) : null;
+    }
+    return null;
+  }
+  function nearestDemandForOrigin(origin){
+    if(!origin) return null;
+    const candidates = activeDemand().map(n=>({n, origin:routeOriginForDemand(n)})).filter(x=>x.origin);
+    candidates.sort((a,b)=>haversineMiles(origin.lat,origin.lon,a.n.lat,a.n.lon)-haversineMiles(origin.lat,origin.lon,b.n.lat,b.n.lon));
+    return candidates.length ? candidates[0].n : null;
+  }
   svg.querySelectorAll('.node-demand').forEach(el=>{
     el.addEventListener('mousemove', evt=>{
       const n = S.demand.find(x=>x.id===el.dataset.id);
@@ -5906,6 +5939,10 @@ function drawMap(){
         <span style="color:${tierColor};font-weight:700">Risk: ${r.tier}</span><br>
         <span class="mut" style="font-size:10.5px;line-height:1.5">${reasonsHtml}</span>`);
     });
+    el.addEventListener('click', ()=>{
+      const n = S.demand.find(x=>x.id===el.dataset.id);
+      if(n) openMarkerRoute(routeOriginForDemand(n), n);
+    });
     el.addEventListener('mouseleave', ()=>tooltip.style.display='none');
   });
   svg.querySelectorAll('.node-supply').forEach(el=>{
@@ -5923,6 +5960,10 @@ function drawMap(){
         Allocated: ${isActive?fmt(used)+' '+S.params.unit+'/day ('+fmt(100*used/s.capacity,0)+'%)':'—'}<br>
         Unit cost: ${money(s.cost)}/${S.params.unit}`);
     });
+    el.addEventListener('click', ()=>{
+      const n = nearestDemandForOrigin(s);
+      if(n) openMarkerRoute(s, n);
+    });
     el.addEventListener('mouseleave', ()=>tooltip.style.display='none');
   });
   svg.querySelectorAll('.node-hub').forEach(el=>{
@@ -5935,6 +5976,10 @@ function drawMap(){
         Configured delivery radius: <b>${fmt(deliveryRadiusMiles,0)} mi</b><br>
         Actual avg / max reach: ${fmt(h.avgDist,0)} mi (${fmtHours(h.avgHours)}) / ${fmt(h.maxDist,0)} mi (${fmtHours(h.maxHours)})`);
     });
+    el.addEventListener('click', ()=>{
+      const n = h.covered && h.covered.length ? h.covered.slice().sort((a,b)=>haversineMiles(h.lat,h.lon,a.lat,a.lon)-haversineMiles(h.lat,h.lon,b.lat,b.lon))[0] : null;
+      if(n) openMarkerRoute(h, n);
+    });
     el.addEventListener('mouseleave', ()=>tooltip.style.display='none');
   });
   svg.querySelectorAll('.node-hycas').forEach(el=>{
@@ -5945,6 +5990,10 @@ function drawMap(){
         Largest covered node: ${fmt(u.maxNodeRate)} ${S.params.unit}/day <span style="color:${u.capacitySufficient?'#8FE0B8':'#F2647A'}">(${u.capacitySufficient?'within capacity':'exceeds capacity'})</span><br>
         Configured response radius: <b>${fmt(S.params.hycasRadius,0)} mi</b><br>
         Actual avg / max reach: ${fmt(u.avgDist,0)} mi (${fmtHours(u.avgHours)}) / ${fmt(u.maxDist,0)} mi (${fmtHours(u.maxHours)})`);
+    });
+    el.addEventListener('click', ()=>{
+      const n = u.covered && u.covered.length ? u.covered.slice().sort((a,b)=>haversineMiles(u.lat,u.lon,a.lat,a.lon)-haversineMiles(u.lat,u.lon,b.lat,b.lon))[0] : null;
+      if(n) openMarkerRoute(u, n);
     });
     el.addEventListener('mouseleave', ()=>tooltip.style.display='none');
   });
